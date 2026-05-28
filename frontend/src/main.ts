@@ -1,0 +1,400 @@
+import './app.css';
+import {
+  GetConfig,
+  SaveConfig,
+  Login,
+  DiscoverDevices,
+  Provision,
+  Install,
+  Verify,
+  TestSSH,
+} from '../wailsjs/go/main/App';
+import type { main } from '../wailsjs/go/models';
+
+type Step = 1 | 2 | 3 | 4 | 5;
+
+const stepLabels = ['Environment', 'Login', 'Discover', 'Provision', 'Install'];
+
+let currentStep: Step = 1;
+let selectedHost = '';
+let provisionResult: main.ProvisionResult | null = null;
+
+const state = {
+  gatewayURL: 'https://api.vyooham.com',
+  backendProfile: 'vps',
+  sshUser: 'pi',
+  sshHost: 'raspberrypi.local',
+  sshPort: 22,
+  macIP: '',
+  phone: '',
+  password: '',
+  sshPassword: '',
+  serial: '',
+  hwVersion: '1.0',
+  deployAgentEnv: true,
+  manualHost: '',
+};
+
+async function init() {
+  try {
+    const cfg = await GetConfig();
+    state.gatewayURL = cfg.gateway_url || state.gatewayURL;
+    state.backendProfile = cfg.backend_profile || 'vps';
+    state.sshUser = cfg.ssh_user || 'pi';
+    state.sshHost = cfg.ssh_host || 'raspberrypi.local';
+    state.sshPort = cfg.ssh_port || 22;
+    state.macIP = cfg.mac_ip || '';
+    state.phone = cfg.phone || '';
+  } catch (e) {
+    console.error(e);
+  }
+  render();
+}
+
+function render() {
+  const app = document.getElementById('app')!;
+  app.innerHTML = `
+    <h1>Bell Provisioner</h1>
+    <p class="subtitle">Factory / lab device provisioning for VPS or Mac LAN</p>
+    ${renderSteps()}
+    <div class="panel">${renderPanel()}</div>
+  `;
+  bindEvents();
+}
+
+function renderSteps(): string {
+  return `<div class="steps">${stepLabels.map((label, i) => {
+    const n = (i + 1) as Step;
+    let cls = 'step-indicator';
+    if (n === currentStep) cls += ' active';
+    else if (n < currentStep) cls += ' done';
+    return `<div class="${cls}">${n}. ${label}</div>`;
+  }).join('')}</div>`;
+}
+
+function renderPanel(): string {
+  switch (currentStep) {
+    case 1: return renderEnv();
+    case 2: return renderLogin();
+    case 3: return renderDiscover();
+    case 4: return renderProvision();
+    case 5: return renderInstall();
+    default: return '';
+  }
+}
+
+function renderEnv(): string {
+  return `
+    <h2>Environment</h2>
+    <div class="field">
+      <label>Gateway URL</label>
+      <input id="gatewayURL" value="${esc(state.gatewayURL)}" placeholder="https://api.vyooham.com" />
+    </div>
+    <div class="field">
+      <label>Target backend</label>
+      <select id="backendProfile">
+        <option value="vps" ${state.backendProfile === 'vps' ? 'selected' : ''}>VPS (api.vyooham.com)</option>
+        <option value="mac" ${state.backendProfile === 'mac' ? 'selected' : ''}>Mac LAN dev</option>
+      </select>
+    </div>
+    <div class="field ${state.backendProfile === 'mac' ? '' : 'hidden'}" id="macIPField">
+      <label>Mac IP (for agent.env)</label>
+      <input id="macIP" value="${esc(state.macIP)}" placeholder="192.168.4.66" />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>SSH user</label>
+        <input id="sshUser" value="${esc(state.sshUser)}" />
+      </div>
+      <div class="field">
+        <label>SSH host</label>
+        <input id="sshHost" value="${esc(state.sshHost)}" />
+      </div>
+      <div class="field" style="max-width:80px">
+        <label>Port</label>
+        <input id="sshPort" type="number" value="${state.sshPort}" />
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnNextEnv">Continue</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderLogin(): string {
+  return `
+    <h2>Admin login</h2>
+    <div class="field">
+      <label>Phone (+country code)</label>
+      <input id="phone" value="${esc(state.phone)}" placeholder="+919876543210" />
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="password" type="password" />
+    </div>
+    <div class="actions">
+      <button class="secondary" id="btnBack">Back</button>
+      <button class="primary" id="btnLogin">Login</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderDiscover(): string {
+  return `
+    <h2>Discover device</h2>
+    <p style="color:var(--muted);font-size:0.85rem;margin:0 0 16px">
+      Scanning LAN for SSH (:22) and setup server (:4444). Pi must be on the same network.
+    </p>
+    <div class="field">
+      <label>Manual host (optional)</label>
+      <input id="manualHost" value="${esc(state.manualHost)}" placeholder="192.168.1.42" />
+    </div>
+    <button class="secondary" id="btnScan">Scan network</button>
+    <ul class="device-list" id="deviceList"></ul>
+    <div class="field">
+      <label>Selected host</label>
+      <input id="selectedHost" value="${esc(selectedHost)}" />
+    </div>
+    <div class="actions">
+      <button class="secondary" id="btnBack">Back</button>
+      <button class="secondary" id="btnTestSSH">Test SSH</button>
+      <button class="primary" id="btnNextDiscover">Continue</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderProvision(): string {
+  return `
+    <h2>Provision in cloud</h2>
+    <div class="field">
+      <label>Serial number (from device label)</label>
+      <input id="serial" value="${esc(state.serial)}" placeholder="DB-2605-0001" />
+    </div>
+    <div class="field">
+      <label>Hardware version</label>
+      <input id="hwVersion" value="${esc(state.hwVersion)}" />
+    </div>
+    <div class="actions">
+      <button class="secondary" id="btnBack">Back</button>
+      <button class="primary" id="btnProvision">Register device</button>
+    </div>
+    <div id="provisionSummary"></div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderInstall(): string {
+  const summary = provisionResult ? `
+    <div class="summary">
+      <strong>Device ID:</strong> <code>${esc(provisionResult.device_id)}</code><br/>
+      <strong>Serial:</strong> ${esc(provisionResult.serial_number)}<br/>
+      <strong>MQTT user:</strong> <code>${esc(provisionResult.mqtt_username)}</code>
+    </div>
+  ` : '';
+
+  return `
+    <h2>Install on device</h2>
+    ${summary}
+    <div class="field" style="margin-top:16px">
+      <label>SSH password (optional if key-based auth works)</label>
+      <input id="sshPassword" type="password" />
+    </div>
+    <label class="checkbox-field">
+      <input type="checkbox" id="deployAgentEnv" ${state.deployAgentEnv ? 'checked' : ''} />
+      Deploy agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}
+    </label>
+    <div class="actions">
+      <button class="secondary" id="btnBack">Back</button>
+      <button class="primary" id="btnInstall">Install credentials</button>
+      <button class="primary" id="btnVerify">Verify MQTT</button>
+    </div>
+    <div id="verifyResult"></div>
+    <div id="msg"></div>
+  `;
+}
+
+function bindEvents() {
+  document.getElementById('btnBack')?.addEventListener('click', () => {
+    if (currentStep > 1) {
+      currentStep = (currentStep - 1) as Step;
+      render();
+    }
+  });
+
+  document.getElementById('btnNextEnv')?.addEventListener('click', async () => {
+    readEnvFields();
+    await SaveConfig({
+      gateway_url: state.gatewayURL,
+      backend_profile: state.backendProfile,
+      ssh_user: state.sshUser,
+      ssh_host: state.sshHost,
+      ssh_port: state.sshPort,
+      mac_ip: state.macIP,
+      phone: state.phone,
+    });
+    currentStep = 2;
+    render();
+  });
+
+  document.getElementById('backendProfile')?.addEventListener('change', (e) => {
+    state.backendProfile = (e.target as HTMLSelectElement).value;
+    document.getElementById('macIPField')?.classList.toggle('hidden', state.backendProfile !== 'mac');
+  });
+
+  document.getElementById('btnLogin')?.addEventListener('click', async () => {
+    state.phone = val('phone');
+    state.password = val('password');
+    setMsg('Logging in…');
+    try {
+      const result = await Login(state.phone, state.password);
+      setMsg(`Logged in as ${result.name || result.phone} (${result.role})`, false);
+      currentStep = 3;
+      setTimeout(render, 600);
+    } catch (e: any) {
+      setMsg(e?.message || String(e), true);
+    }
+  });
+
+  document.getElementById('btnScan')?.addEventListener('click', async () => {
+    state.manualHost = val('manualHost');
+    const list = document.getElementById('deviceList')!;
+    list.innerHTML = '<li class="spinner">Scanning… (may take up to 45s)</li>';
+    try {
+      const devices = await DiscoverDevices(state.manualHost);
+      if (devices.length === 0) {
+        list.innerHTML = '<li style="cursor:default;color:var(--muted)">No devices found — enter IP manually below</li>';
+        return;
+      }
+      list.innerHTML = devices.map(d => `
+        <li data-host="${esc(d.host)}" data-serial="${esc(d.serial_number || '')}">
+          <strong>${esc(d.host)}</strong>
+          <div class="meta">
+            SSH: ${d.ssh_reachable ? '✓' : '✗'}
+            · Setup :4444: ${d.setup_server ? '✓' : '✗'}
+            ${d.serial_number ? ` · Serial: ${esc(d.serial_number)}` : ''}
+          </div>
+        </li>
+      `).join('');
+      list.querySelectorAll('li[data-host]').forEach(li => {
+        li.addEventListener('click', () => {
+          selectedHost = li.getAttribute('data-host') || '';
+          const serial = li.getAttribute('data-serial');
+          if (serial) state.serial = serial;
+          const input = document.getElementById('selectedHost') as HTMLInputElement;
+          if (input) input.value = selectedHost;
+          list.querySelectorAll('li').forEach(el => el.classList.remove('selected'));
+          li.classList.add('selected');
+        });
+      });
+    } catch (e: any) {
+      list.innerHTML = '';
+      setMsg(e?.message || String(e), true);
+    }
+  });
+
+  document.getElementById('btnTestSSH')?.addEventListener('click', async () => {
+    selectedHost = val('selectedHost') || selectedHost;
+    setMsg('Testing SSH…');
+    try {
+      await TestSSH(selectedHost, state.sshUser, state.sshPort, val('sshPassword') || state.sshPassword);
+      setMsg('SSH connection OK', false);
+    } catch (e: any) {
+      setMsg(e?.message || String(e), true);
+    }
+  });
+
+  document.getElementById('btnNextDiscover')?.addEventListener('click', () => {
+    selectedHost = val('selectedHost') || selectedHost;
+    if (!selectedHost) {
+      setMsg('Select or enter a device host', true);
+      return;
+    }
+    state.sshHost = selectedHost;
+    currentStep = 4;
+    render();
+  });
+
+  document.getElementById('btnProvision')?.addEventListener('click', async () => {
+    state.serial = val('serial');
+    state.hwVersion = val('hwVersion') || '1.0';
+    setMsg('Provisioning…');
+    try {
+      provisionResult = await Provision({ serial: state.serial, hw_version: state.hwVersion });
+      document.getElementById('provisionSummary')!.innerHTML = `
+        <div class="success summary" style="margin-top:16px">
+          Registered <strong>${esc(provisionResult!.device_id)}</strong><br/>
+          MQTT password shown once — will be written to the Pi on install.
+        </div>`;
+      setMsg('');
+      currentStep = 5;
+      setTimeout(render, 800);
+    } catch (e: any) {
+      setMsg(e?.message || String(e), true);
+    }
+  });
+
+  document.getElementById('btnInstall')?.addEventListener('click', async () => {
+    state.sshPassword = val('sshPassword');
+    state.deployAgentEnv = (document.getElementById('deployAgentEnv') as HTMLInputElement)?.checked ?? true;
+    setMsg('Installing via SSH…');
+    try {
+      const result = await Install({
+        host: selectedHost || state.sshHost,
+        ssh_user: state.sshUser,
+        ssh_port: state.sshPort,
+        ssh_password: state.sshPassword,
+        deploy_agent_env: state.deployAgentEnv,
+      });
+      setMsg(result.message + (result.agent_active ? ' · Agent active' : ''), !result.agent_active);
+    } catch (e: any) {
+      setMsg(e?.message || String(e), true);
+    }
+  });
+
+  document.getElementById('btnVerify')?.addEventListener('click', async () => {
+    setMsg('Verifying MQTT…');
+    try {
+      const result = await Verify({
+        device_id: provisionResult?.device_id || '',
+        mqtt_username: provisionResult?.mqtt_username || '',
+        mqtt_password: provisionResult?.mqtt_password || '',
+      });
+      document.getElementById('verifyResult')!.innerHTML = `
+        <div class="${result.mqtt.connected ? 'success' : 'error'}" style="margin-top:12px">
+          ${esc(result.mqtt.message)}
+        </div>`;
+      setMsg('');
+    } catch (e: any) {
+      setMsg(e?.message || String(e), true);
+    }
+  });
+}
+
+function readEnvFields() {
+  state.gatewayURL = val('gatewayURL');
+  state.backendProfile = (document.getElementById('backendProfile') as HTMLSelectElement)?.value || 'vps';
+  state.sshUser = val('sshUser');
+  state.sshHost = val('sshHost');
+  state.sshPort = parseInt(val('sshPort') || '22', 10);
+  state.macIP = val('macIP');
+}
+
+function val(id: string): string {
+  return (document.getElementById(id) as HTMLInputElement)?.value?.trim() || '';
+}
+
+function setMsg(text: string, isError = false) {
+  const el = document.getElementById('msg');
+  if (!el) return;
+  el.className = isError ? 'error' : text ? 'success' : '';
+  el.textContent = text;
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+init();
