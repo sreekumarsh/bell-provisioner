@@ -52,8 +52,8 @@ Saved to `~/Library/Application Support/bell-provisioner/config.json` (no passwo
 
 ## Related docs
 
-- [firmware/vps-agent-setup.md](../bell-docs/firmware/vps-agent-setup.md) — VPS agent + provisioning context
-- [backend/api-gateway/README.md](../bell-docs/backend/api-gateway/README.md) — admin routes
+- [firmware/vps-agent-setup.md](https://github.com/sreekumarsh/bell-docs/blob/main/firmware/vps-agent-setup.md) — VPS agent + provisioning context
+- [backend/api-gateway/README.md](https://github.com/sreekumarsh/bell-docs/blob/main/backend/api-gateway/README.md) — admin routes
 
 ## Future
 
