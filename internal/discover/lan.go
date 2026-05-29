@@ -31,6 +31,8 @@ type setupIdentity struct {
 type ScanOptions struct {
 	ManualHosts []string
 	Timeout     time.Duration
+	// FullSubnet scans the local /24 (slow). When false, only ManualHosts and defaultHosts are probed.
+	FullSubnet bool
 }
 
 // Scan finds Raspberry Pi hosts on the local network.
@@ -41,8 +43,10 @@ func Scan(ctx context.Context, opts ScanOptions) []Candidate {
 	}
 
 	hosts := uniqueHosts(append(defaultHosts(), opts.ManualHosts...))
-	if subnet, err := localSubnetHosts(); err == nil {
-		hosts = uniqueHosts(append(hosts, subnet...))
+	if opts.FullSubnet {
+		if subnet, err := localSubnetHosts(); err == nil {
+			hosts = uniqueHosts(append(hosts, subnet...))
+		}
 	}
 
 	var (
@@ -70,6 +74,9 @@ func Scan(ctx context.Context, opts ScanOptions) []Candidate {
 		}()
 	}
 	wg.Wait()
+	if out == nil {
+		return []Candidate{}
+	}
 	return out
 }
 

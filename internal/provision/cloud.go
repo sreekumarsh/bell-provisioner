@@ -34,12 +34,13 @@ func (e *APIError) Error() string {
 }
 
 // RegisterDevice calls POST /admin/devices/provision on the API gateway.
-func RegisterDevice(gatewayURL, accessToken, serial, hwVersion, publicKeyPEM string) (*Result, error) {
+func RegisterDevice(gatewayURL, accessToken, serial, hwVersion, publicKeyPEM string, overwrite bool) (*Result, error) {
 	base := strings.TrimRight(gatewayURL, "/")
-	body, err := json.Marshal(map[string]string{
+	body, err := json.Marshal(map[string]any{
 		"serial_number":  serial,
 		"hw_version":     hwVersion,
 		"public_key_pem": publicKeyPEM,
+		"overwrite":      overwrite,
 	})
 	if err != nil {
 		return nil, err

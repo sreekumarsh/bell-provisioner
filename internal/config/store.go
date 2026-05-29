@@ -6,15 +6,21 @@ import (
 	"path/filepath"
 )
 
-// AppConfig is persisted user preferences (not secrets).
+// AppConfig is persisted user preferences. github_token is stored locally (chmod 0600).
 type AppConfig struct {
-	GatewayURL     string `json:"gateway_url"`
-	BackendProfile string `json:"backend_profile"`
-	SSHUser        string `json:"ssh_user"`
-	SSHHost        string `json:"ssh_host"`
-	SSHPort        int    `json:"ssh_port"`
-	MacIP          string `json:"mac_ip"`
-	Phone          string `json:"phone"`
+	GatewayURL        string `json:"gateway_url"`
+	BackendProfile    string `json:"backend_profile"`
+	SSHUser           string `json:"ssh_user"`
+	SSHHost           string `json:"ssh_host"`
+	SSHPort           int    `json:"ssh_port"`
+	MacIP             string `json:"mac_ip"`
+	Phone             string `json:"phone"`
+	GitHubToken       string `json:"github_token,omitempty"`
+	SSHPassword       string `json:"ssh_password,omitempty"`
+	AgentRepoURL      string `json:"agent_repo_url"`
+	AgentRepoBranch   string `json:"agent_repo_branch"`
+	AgentRepoPath     string `json:"agent_repo_path"`
+	AgentArtifactName string `json:"agent_artifact_name"`
 }
 
 // Default returns sensible defaults for first launch.
@@ -65,6 +71,15 @@ func Load() AppConfig {
 	}
 	if cfg.BackendProfile == "" {
 		cfg.BackendProfile = string(ProfileVPS)
+	}
+	if cfg.AgentRepoURL == "" {
+		cfg.AgentRepoURL = DefaultAgentRepoURL
+	}
+	if cfg.AgentRepoBranch == "" {
+		cfg.AgentRepoBranch = DefaultAgentRepoBranch
+	}
+	if cfg.AgentArtifactName == "" {
+		cfg.AgentArtifactName = DefaultAgentArtifactName
 	}
 	return cfg
 }

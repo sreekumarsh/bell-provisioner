@@ -4,38 +4,44 @@ import (
 	"bytes"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
-// SSHConfig holds connection parameters for the Pi.
+// SSHConfig holds connection parameters for the Pi (password auth only).
 type SSHConfig struct {
 	Host     string
 	Port     int
 	User     string
 	Password string
-	KeyPath  string
 }
 
 // InstallResult reports post-install checks.
 type InstallResult struct {
-	AgentActive bool   `json:"agent_active"`
-	Message     string `json:"message"`
+	AgentActive  bool   `json:"agent_active"`
+	AgentChecked bool   `json:"agent_checked_out"`
+	Message      string `json:"message"`
 }
 
 // InstallCredentials copies device.key and identity.json to the Pi and restarts the agent.
-func InstallCredentials(cfg SSHConfig, privateKeyPEM, identityJSON []byte, agentEnvContent string, deployAgentEnv bool) (*InstallResult, error) {
+func InstallCredentials(cfg SSHConfig, privateKeyPEM, identityJSON []byte, agentEnvContent string, deployAgentEnv bool, agentOpts AgentInstallOptions) (*InstallResult, error) {
 	client, err := dialSSH(cfg)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
 
-	if err := runCmd(client, "sudo mkdir -p /etc/doorbell"); err != nil {
+	agentDeployed := false
+	if agentOpts.Enabled {
+		if err := DeployAgentBundle(client, cfg.Password, agentOpts.Bundle); err != nil {
+			return nil, fmt.Errorf("deploy agent: %w", err)
+		}
+		agentDeployed = true
+	}
+
+	if err := runSudo(client, cfg.Password, "sudo mkdir -p /etc/doorbell"); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 
@@ -47,11 +53,12 @@ func InstallCredentials(cfg SSHConfig, privateKeyPEM, identityJSON []byte, agent
 	}
 
 	installScript := `
+sudo mkdir -p /etc/doorbell
 sudo install -m 600 -o root -g root /tmp/device.key /etc/doorbell/device.key &&
 sudo install -m 644 -o root -g root /tmp/identity.json /etc/doorbell/identity.json &&
 rm -f /tmp/device.key /tmp/identity.json
 `
-	if err := runCmd(client, installScript); err != nil {
+	if err := runSudo(client, cfg.Password, installScript); err != nil {
 		return nil, fmt.Errorf("install files: %w", err)
 	}
 
@@ -59,12 +66,12 @@ rm -f /tmp/device.key /tmp/identity.json
 		if err := uploadFile(client, "/tmp/agent.env", []byte(agentEnvContent), 0644); err != nil {
 			return nil, fmt.Errorf("upload agent.env: %w", err)
 		}
-		if err := runCmd(client, "sudo install -m 644 -o root -g root /tmp/agent.env /etc/doorbell/agent.env && rm -f /tmp/agent.env"); err != nil {
+		if err := runSudo(client, cfg.Password, "sudo install -m 644 -o root -g root /tmp/agent.env /etc/doorbell/agent.env && rm -f /tmp/agent.env"); err != nil {
 			return nil, fmt.Errorf("install agent.env: %w", err)
 		}
 	}
 
-	if err := runCmd(client, "sudo systemctl restart doorbell-agent || sudo systemctl restart doorbell-agent.service"); err != nil {
+	if err := runSudo(client, cfg.Password, "sudo systemctl daemon-reload && (sudo systemctl restart doorbell-agent || sudo systemctl restart doorbell-agent.service)"); err != nil {
 		return nil, fmt.Errorf("restart agent: %w", err)
 	}
 
@@ -75,10 +82,16 @@ rm -f /tmp/device.key /tmp/identity.json
 	}
 
 	msg := "Credentials installed"
-	if !active {
-		msg = "Credentials installed but doorbell-agent is not active — check journalctl on the Pi"
+	if agentDeployed {
+		msg = "Agent installed from CI build, credentials installed"
 	}
-	return &InstallResult{AgentActive: active, Message: msg}, nil
+	if !active {
+		msg = "Install finished but doorbell-agent is not active — check journalctl on the Pi"
+		if agentDeployed {
+			msg = "Agent installed from CI but service is not active — check journalctl on the Pi"
+		}
+	}
+	return &InstallResult{AgentActive: active, AgentChecked: agentDeployed, Message: msg}, nil
 }
 
 func dialSSH(cfg SSHConfig) (*ssh.Client, error) {
@@ -87,92 +100,106 @@ func dialSSH(cfg SSHConfig) (*ssh.Client, error) {
 		port = 22
 	}
 
-	var authMethods []ssh.AuthMethod
-	if cfg.Password != "" {
-		authMethods = append(authMethods, ssh.Password(cfg.Password))
+	password := strings.TrimSpace(cfg.Password)
+	if password == "" {
+		return nil, fmt.Errorf("SSH password is required — set it on the Environment step")
 	}
-	keyPath := cfg.KeyPath
-	if keyPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			for _, name := range []string{"id_ed25519", "id_rsa"} {
-				p := filepath.Join(home, ".ssh", name)
-				if _, err := os.Stat(p); err == nil {
-					keyPath = p
-					break
-				}
-			}
-		}
-	}
-	if keyPath != "" {
-		key, err := loadPrivateKey(keyPath)
-		if err != nil {
-			return nil, fmt.Errorf("load ssh key %s: %w", keyPath, err)
-		}
-		authMethods = append(authMethods, ssh.PublicKeys(key))
-	}
-	if len(authMethods) == 0 {
-		return nil, fmt.Errorf("no SSH auth method: set password or add ~/.ssh/id_ed25519")
+	authMethods := []ssh.AuthMethod{
+		ssh.Password(password),
+		sshKeyboardInteractive(password),
 	}
 
 	clientConfig := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // dev/lab Pi on LAN
-		Timeout:         10 * time.Second,
+		Timeout:         15 * time.Second,
 	}
 
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", port))
-	return ssh.Dial("tcp", addr, clientConfig)
-}
-
-func loadPrivateKey(path string) (ssh.Signer, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := tcpReachable(addr, 5*time.Second); err != nil {
 		return nil, err
 	}
-	signer, err := ssh.ParsePrivateKey(data)
+	client, err := ssh.Dial("tcp", addr, clientConfig)
 	if err != nil {
+		if strings.Contains(err.Error(), "unable to authenticate") {
+			return nil, fmt.Errorf("%w — wrong Pi SSH user or password (user %q must be the Pi account, e.g. pi — not your Mac login)", err, cfg.User)
+		}
 		return nil, err
 	}
-	return signer, nil
+	return client, nil
 }
 
-func uploadFile(client *ssh.Client, remotePath string, content []byte, mode os.FileMode) error {
-	sftp, err := client.NewSession()
-	if err != nil {
-		return err
+func tcpReachable(addr string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err == nil {
+		_ = conn.Close()
+		return nil
 	}
-	defer sftp.Close()
-
-	go func() {
-		w, _ := sftp.StdinPipe()
-		defer w.Close()
-		_, _ = fmt.Fprintf(w, "C%04o %d %s\n", mode, len(content), remotePath)
-		_, _ = w.Write(content)
-		_, _ = fmt.Fprint(w, "\x00")
-	}()
-
-	if err := sftp.Run("scp -t " + remotePath); err != nil {
-		return err
+	if strings.Contains(err.Error(), "no route to host") {
+		host, _, _ := net.SplitHostPort(addr)
+		return fmt.Errorf("cannot reach %s — Mac and Pi must be on the same LAN (check Pi IP, Wi‑Fi, and VPN). From Terminal: ping %s", addr, host)
 	}
-	return nil
+	if strings.Contains(err.Error(), "connection refused") {
+		return fmt.Errorf("SSH port closed on %s — enable SSH on the Pi (raspi-config or sudo systemctl start ssh)", addr)
+	}
+	if strings.Contains(err.Error(), "i/o timeout") || strings.Contains(err.Error(), "timeout") {
+		return fmt.Errorf("timed out reaching %s — verify IP, same subnet, and that the Pi is powered on", addr)
+	}
+	return fmt.Errorf("network error reaching %s: %w", addr, err)
 }
 
-func runCmd(client *ssh.Client, script string) error {
+// sshKeyboardInteractive supports sshd configs that use PAM / KbdInteractive instead of password auth.
+func sshKeyboardInteractive(password string) ssh.AuthMethod {
+	return ssh.KeyboardInteractive(func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
+		answers := make([]string, len(questions))
+		for i := range questions {
+			answers[i] = password
+		}
+		return answers, nil
+	})
+}
+
+func uploadFile(client *ssh.Client, remotePath string, content []byte, mode uint32) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return err
 	}
 	defer session.Close()
 
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return err
+	}
+
 	var stderr bytes.Buffer
 	session.Stderr = &stderr
-	if err := session.Run(script); err != nil {
+
+	cmd := fmt.Sprintf("cat > %s", shellSingleQuote(remotePath))
+	if err := session.Start(cmd); err != nil {
+		return err
+	}
+
+	if _, err := stdin.Write(content); err != nil {
+		_ = session.Close()
+		return fmt.Errorf("write upload stream: %w", err)
+	}
+	if err := stdin.Close(); err != nil {
+		return fmt.Errorf("close upload stream: %w", err)
+	}
+
+	if err := session.Wait(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
 			return fmt.Errorf("%w: %s", err, msg)
 		}
 		return err
+	}
+
+	if mode != 0 {
+		if err := runCmd(client, fmt.Sprintf("chmod %04o %s", mode, shellSingleQuote(remotePath))); err != nil {
+			return fmt.Errorf("chmod %s: %w", remotePath, err)
+		}
 	}
 	return nil
 }

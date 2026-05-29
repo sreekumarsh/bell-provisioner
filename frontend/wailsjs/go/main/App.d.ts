@@ -5,7 +5,7 @@ import {config} from '../models';
 import {main} from '../models';
 import {device} from '../models';
 
-export function DiscoverDevices(arg1:string):Promise<Array<discover.Candidate>>;
+export function DiscoverDevices(arg1:string,arg2:boolean):Promise<Array<discover.Candidate>>;
 
 export function GetConfig():Promise<config.AppConfig>;
 

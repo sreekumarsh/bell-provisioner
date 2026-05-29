@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	appcfg "bell-provisioner/internal/config"
+	"bell-provisioner/internal/agentrelease"
 	"bell-provisioner/internal/device"
 	"bell-provisioner/internal/discover"
 	"bell-provisioner/internal/gateway"
@@ -101,8 +104,8 @@ func (a *App) Login(phone, password string) (*LoginResult, error) {
 	}, nil
 }
 
-// DiscoverDevices scans the LAN for Pi hosts.
-func (a *App) DiscoverDevices(manualHost string) []discover.Candidate {
+// DiscoverDevices probes Pi hosts. fullLAN=true scans the subnet (slow); false only checks configured hosts.
+func (a *App) DiscoverDevices(manualHost string, fullLAN bool) []discover.Candidate {
 	a.mu.Lock()
 	hosts := []string{}
 	if manualHost != "" {
@@ -113,19 +116,32 @@ func (a *App) DiscoverDevices(manualHost string) []discover.Candidate {
 	}
 	a.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(a.ctx, 45*time.Second)
+	timeout := 12 * time.Second
+	if fullLAN {
+		timeout = 45 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, timeout)
 	defer cancel()
 
 	return discover.Scan(ctx, discover.ScanOptions{
 		ManualHosts: hosts,
 		Timeout:     2 * time.Second,
+		FullSubnet:  fullLAN,
 	})
 }
 
 // ProvisionRequest holds serial/hw for cloud registration.
 type ProvisionRequest struct {
-	Serial     string `json:"serial"`
-	HWVersion  string `json:"hw_version"`
+	Serial    string `json:"serial"`
+	HWVersion string `json:"hw_version"`
+	Overwrite *bool  `json:"overwrite"`
+}
+
+func provisionOverwrite(flag *bool) bool {
+	if flag == nil {
+		return true
+	}
+	return *flag
 }
 
 // ProvisionResult holds cloud registration outcome (no private key exposed).
@@ -159,8 +175,12 @@ func (a *App) Provision(req ProvisionRequest) (*ProvisionResult, error) {
 		return nil, err
 	}
 
-	result, err := provision.RegisterDevice(gatewayURL, token, req.Serial, hw, keypair.PublicKeyPEM)
+	result, err := provision.RegisterDevice(gatewayURL, token, req.Serial, hw, keypair.PublicKeyPEM, provisionOverwrite(req.Overwrite))
 	if err != nil {
+		var apiErr *provision.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "serial_already_provisioned" && !provisionOverwrite(req.Overwrite) {
+			return nil, fmt.Errorf("serial %q already provisioned — enable Overwrite on the Provision step or set overwrite: true", req.Serial)
+		}
 		return nil, err
 	}
 
@@ -194,6 +214,15 @@ type InstallRequest struct {
 	SSHPort         int    `json:"ssh_port"`
 	SSHPassword     string `json:"ssh_password"`
 	DeployAgentEnv  bool   `json:"deploy_agent_env"`
+	CheckoutAgent   *bool  `json:"checkout_agent"`
+	GitHubToken     string `json:"github_token"`
+}
+
+func checkoutAgentEnabled(flag *bool) bool {
+	if flag == nil {
+		return true
+	}
+	return *flag
 }
 
 // Install pushes credentials to the Pi over SSH.
@@ -214,13 +243,17 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 	}
 	resolved, _ := discover.ResolveHost(host)
 
-	sshUser := req.SSHUser
+	sshUser := strings.ToLower(strings.TrimSpace(req.SSHUser))
 	if sshUser == "" {
-		sshUser = cfg.SSHUser
+		sshUser = strings.ToLower(strings.TrimSpace(cfg.SSHUser))
 	}
 	port := req.SSHPort
 	if port == 0 {
 		port = cfg.SSHPort
+	}
+	sshPass := strings.TrimSpace(req.SSHPassword)
+	if sshPass == "" {
+		sshPass = strings.TrimSpace(cfg.SSHPassword)
 	}
 
 	agentEnv := ""
@@ -228,12 +261,38 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 		agentEnv = appcfg.AgentEnv(appcfg.BackendProfile(cfg.BackendProfile), cfg.MacIP)
 	}
 
+	ghToken := strings.TrimSpace(req.GitHubToken)
+	if ghToken == "" {
+		ghToken = strings.TrimSpace(cfg.GitHubToken)
+	}
+
+	var bundle *agentrelease.Bundle
+	if checkoutAgentEnabled(req.CheckoutAgent) {
+		if ghToken == "" {
+			return nil, fmt.Errorf("GitHub token is required — set it in Environment or config.json (github_token)")
+		}
+		if !appcfg.ValidGitHubToken(ghToken) {
+			return nil, fmt.Errorf("GitHub token in config is invalid or was overwritten — paste a new fine-grained PAT (github_pat_…) or classic token (ghp_…) in Environment and continue")
+		}
+		owner, repo, err := appcfg.GitHubRepo(cfg.AgentRepoURL)
+		if err != nil {
+			return nil, err
+		}
+		bundle, err = agentrelease.FetchLatestDefaultTimeout(owner, repo, ghToken, cfg.AgentArtifactName)
+		if err != nil {
+			return nil, fmt.Errorf("download agent artifact: %w", err)
+		}
+	}
+
 	return device.InstallCredentials(device.SSHConfig{
 		Host:     resolved,
 		Port:     port,
 		User:     sshUser,
-		Password: req.SSHPassword,
-	}, priv, identity, agentEnv, req.DeployAgentEnv)
+		Password: sshPass,
+	}, priv, identity, agentEnv, req.DeployAgentEnv, device.AgentInstallOptions{
+		Enabled: checkoutAgentEnabled(req.CheckoutAgent),
+		Bundle:  bundle,
+	})
 }
 
 // VerifyRequest configures post-install checks.
@@ -285,15 +344,21 @@ func (a *App) TestSSH(host, user string, port int, password string) error {
 	if user == "" {
 		user = cfg.SSHUser
 	}
+	user = strings.ToLower(strings.TrimSpace(user))
 	if port == 0 {
 		port = cfg.SSHPort
 	}
 	resolved, _ := discover.ResolveHost(host)
 
+	sshPass := strings.TrimSpace(password)
+	if sshPass == "" {
+		sshPass = strings.TrimSpace(cfg.SSHPassword)
+	}
+
 	return device.TestSSH(device.SSHConfig{
 		Host:     resolved,
 		Port:     port,
 		User:     user,
-		Password: password,
+		Password: sshPass,
 	})
 }

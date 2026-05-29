@@ -8,6 +8,12 @@ export namespace config {
 	    ssh_port: number;
 	    mac_ip: string;
 	    phone: string;
+	    github_token?: string;
+	    ssh_password?: string;
+	    agent_repo_url: string;
+	    agent_repo_branch: string;
+	    agent_repo_path: string;
+	    agent_artifact_name: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -22,6 +28,12 @@ export namespace config {
 	        this.ssh_port = source["ssh_port"];
 	        this.mac_ip = source["mac_ip"];
 	        this.phone = source["phone"];
+	        this.github_token = source["github_token"];
+	        this.ssh_password = source["ssh_password"];
+	        this.agent_repo_url = source["agent_repo_url"];
+	        this.agent_repo_branch = source["agent_repo_branch"];
+	        this.agent_repo_path = source["agent_repo_path"];
+	        this.agent_artifact_name = source["agent_artifact_name"];
 	    }
 	}
 
@@ -31,6 +43,7 @@ export namespace device {
 	
 	export class InstallResult {
 	    agent_active: boolean;
+	    agent_checked_out: boolean;
 	    message: string;
 	
 	    static createFrom(source: any = {}) {
@@ -40,6 +53,7 @@ export namespace device {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.agent_active = source["agent_active"];
+	        this.agent_checked_out = source["agent_checked_out"];
 	        this.message = source["message"];
 	    }
 	}
@@ -81,6 +95,8 @@ export namespace main {
 	    ssh_port: number;
 	    ssh_password: string;
 	    deploy_agent_env: boolean;
+	    checkout_agent?: boolean;
+	    github_token: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new InstallRequest(source);
@@ -93,6 +109,8 @@ export namespace main {
 	        this.ssh_port = source["ssh_port"];
 	        this.ssh_password = source["ssh_password"];
 	        this.deploy_agent_env = source["deploy_agent_env"];
+	        this.checkout_agent = source["checkout_agent"];
+	        this.github_token = source["github_token"];
 	    }
 	}
 	export class LoginResult {
@@ -118,6 +136,7 @@ export namespace main {
 	export class ProvisionRequest {
 	    serial: string;
 	    hw_version: string;
+	    overwrite?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProvisionRequest(source);
@@ -127,6 +146,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.serial = source["serial"];
 	        this.hw_version = source["hw_version"];
+	        this.overwrite = source["overwrite"];
 	    }
 	}
 	export class ProvisionResult {
