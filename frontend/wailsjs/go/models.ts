@@ -134,6 +134,8 @@ export namespace main {
 	    }
 	}
 	export class ProvisionRequest {
+	    dtid: string;
+	    device_id: string;
 	    serial: string;
 	    hw_version: string;
 	    overwrite?: boolean;
@@ -144,13 +146,18 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dtid = source["dtid"];
+	        this.device_id = source["device_id"];
 	        this.serial = source["serial"];
 	        this.hw_version = source["hw_version"];
 	        this.overwrite = source["overwrite"];
 	    }
 	}
 	export class ProvisionResult {
+	    global_device_id: string;
 	    device_id: string;
+	    dtid: string;
+	    dsid: string;
 	    serial_number: string;
 	    mqtt_username: string;
 	    mqtt_password: string;
@@ -161,7 +168,10 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.global_device_id = source["global_device_id"];
 	        this.device_id = source["device_id"];
+	        this.dtid = source["dtid"];
+	        this.dsid = source["dsid"];
 	        this.serial_number = source["serial_number"];
 	        this.mqtt_username = source["mqtt_username"];
 	        this.mqtt_password = source["mqtt_password"];
@@ -214,6 +224,29 @@ export namespace main {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace gateway {
+	
+	export class DeviceType {
+	    dtid: string;
+	    dfid: string;
+	    friendly_name: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceType(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dtid = source["dtid"];
+	        this.dfid = source["dfid"];
+	        this.friendly_name = source["friendly_name"];
+	        this.deprecated = source["deprecated"];
+	    }
 	}
 
 }

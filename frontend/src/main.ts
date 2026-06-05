@@ -4,13 +4,14 @@ import {
   SaveConfig,
   Login,
   DiscoverDevices,
+  ListDeviceTypes,
   Provision,
   Install,
   Verify,
   TestSSH,
 } from '../wailsjs/go/main/App';
 import { config } from '../wailsjs/go/models';
-import type { main } from '../wailsjs/go/models';
+import type { gateway, main } from '../wailsjs/go/models';
 
 type Step = 1 | 2 | 3 | 4 | 5;
 
@@ -20,6 +21,7 @@ let currentStep: Step = 1;
 let selectedHost = '';
 let provisionResult: main.ProvisionResult | null = null;
 let savedCfg: config.AppConfig | null = null;
+let deviceTypes: gateway.DeviceType[] = [];
 
 const state = {
   gatewayURL: 'https://api.vyooham.com',
@@ -31,8 +33,10 @@ const state = {
   phone: '',
   password: '',
   sshPassword: '',
+  dtid: '',
+  factoryDeviceID: '',
   serial: '',
-  hwVersion: '1.0',
+  hwVersion: '1.1',
   deployAgentEnv: true,
   checkoutAgent: true,
   githubToken: '',
@@ -194,11 +198,30 @@ function renderDiscover(): string {
 }
 
 function renderProvision(): string {
+  const typeOptions = deviceTypes.length
+    ? deviceTypes
+        .filter(t => !t.deprecated)
+        .map(t => `<option value="${esc(t.dtid)}" ${state.dtid === t.dtid ? 'selected' : ''}>${esc(t.friendly_name || t.dtid)} (${esc(t.dtid)})</option>`)
+        .join('')
+    : '<option value="">Loading types…</option>';
+
   return `
-    <h2>Provision in cloud</h2>
+    <h2>Provision in cloud (v2)</h2>
+    <p style="color:var(--muted);font-size:0.85rem;margin:0 0 16px">
+      Apply the device-service registry (<code>tools/device-registry apply</code>) before the first v2 unit.
+    </p>
+    <div class="field">
+      <label>Device type (DTID)</label>
+      <select id="dtid">${typeOptions}</select>
+    </div>
+    <div class="field">
+      <label>Factory device_id (per-type unit number)</label>
+      <input id="factoryDeviceID" value="${esc(state.factoryDeviceID)}" placeholder="00042" />
+      <p style="color:var(--muted);font-size:0.85rem;margin:4px 0 0">Alphanumeric, no underscore. Composes <code>global_device_id = dtid_device_id</code>.</p>
+    </div>
     <div class="field">
       <label>Serial number (from device label)</label>
-      <input id="serial" value="${esc(state.serial)}" placeholder="DB-2605-0001" />
+      <input id="serial" value="${esc(state.serial)}" placeholder="DB-2605-0042" />
     </div>
     <div class="field">
       <label>Hardware version</label>
@@ -220,7 +243,9 @@ function renderProvision(): string {
 function renderInstall(): string {
   const summary = provisionResult ? `
     <div class="summary">
-      <strong>Device ID:</strong> <code>${esc(provisionResult.device_id)}</code><br/>
+      <strong>global_device_id:</strong> <code>${esc(provisionResult.global_device_id)}</code><br/>
+      <strong>DSID:</strong> <code>${esc(provisionResult.dsid)}</code><br/>
+      <strong>DTID:</strong> <code>${esc(provisionResult.dtid)}</code> · unit <code>${esc(provisionResult.device_id)}</code><br/>
       <strong>Serial:</strong> ${esc(provisionResult.serial_number)}<br/>
       <strong>MQTT user:</strong> <code>${esc(provisionResult.mqtt_username)}</code>
     </div>
@@ -335,24 +360,37 @@ function bindEvents() {
     }
     state.sshHost = selectedHost;
     currentStep = 4;
+    void loadDeviceTypes();
     render();
   });
 
   document.getElementById('btnProvision')?.addEventListener('click', async () => {
+    state.dtid = val('dtid');
+    state.factoryDeviceID = val('factoryDeviceID');
     state.serial = val('serial');
-    state.hwVersion = val('hwVersion') || '1.0';
+    state.hwVersion = val('hwVersion') || '1.1';
     state.overwriteSerial = (document.getElementById('overwriteSerial') as HTMLInputElement)?.checked ?? true;
+    if (!state.dtid) {
+      setMsg('Select a device type (DTID) — apply registry first if the list is empty', true);
+      return;
+    }
+    if (!state.factoryDeviceID) {
+      setMsg('Factory device_id is required', true);
+      return;
+    }
     setMsg('Provisioning…');
     try {
       provisionResult = await Provision({
+        dtid: state.dtid,
+        device_id: state.factoryDeviceID,
         serial: state.serial,
         hw_version: state.hwVersion,
         overwrite: state.overwriteSerial,
       });
       document.getElementById('provisionSummary')!.innerHTML = `
         <div class="success summary" style="margin-top:16px">
-          Registered <strong>${esc(provisionResult!.device_id)}</strong><br/>
-          MQTT password shown once — will be written to the Pi on install.
+          Registered <strong>${esc(provisionResult!.global_device_id)}</strong><br/>
+          DSID <code>${esc(provisionResult!.dsid)}</code> for QR claim · MQTT password written on install.
         </div>`;
       setMsg('');
       currentStep = 5;
@@ -397,7 +435,7 @@ function bindEvents() {
     setMsg('Verifying MQTT…');
     try {
       const result = await Verify({
-        device_id: provisionResult?.device_id || '',
+        device_id: provisionResult?.global_device_id || '',
         mqtt_username: provisionResult?.mqtt_username || '',
         mqtt_password: provisionResult?.mqtt_password || '',
       });
@@ -415,6 +453,23 @@ function bindEvents() {
 function initDiscoverStep() {
   selectedHost = state.sshHost;
   if (!state.manualHost) state.manualHost = state.sshHost;
+}
+
+async function loadDeviceTypes() {
+  try {
+    deviceTypes = (await ListDeviceTypes()) ?? [];
+    if (!state.dtid && deviceTypes.length) {
+      const active = deviceTypes.find(t => !t.deprecated);
+      if (active) state.dtid = active.dtid;
+    }
+    if (currentStep === 4) render();
+  } catch (e: any) {
+    deviceTypes = [];
+    if (currentStep === 4) {
+      render();
+      setMsg(e?.message || 'Failed to load device types — login and apply registry first', true);
+    }
+  }
 }
 
 async function runDiscover(fullLAN: boolean) {

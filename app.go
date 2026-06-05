@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -130,8 +131,12 @@ func (a *App) DiscoverDevices(manualHost string, fullLAN bool) []discover.Candid
 	})
 }
 
-// ProvisionRequest holds serial/hw for cloud registration.
+var factoryDeviceIDRE = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+
+// ProvisionRequest holds v2 factory provision inputs.
 type ProvisionRequest struct {
+	DTID      string `json:"dtid"`
+	DeviceID  string `json:"device_id"`
 	Serial    string `json:"serial"`
 	HWVersion string `json:"hw_version"`
 	Overwrite *bool  `json:"overwrite"`
@@ -146,14 +151,42 @@ func provisionOverwrite(flag *bool) bool {
 
 // ProvisionResult holds cloud registration outcome (no private key exposed).
 type ProvisionResult struct {
-	DeviceID     string `json:"device_id"`
-	SerialNumber string `json:"serial_number"`
-	MQTTUsername string `json:"mqtt_username"`
-	MQTTPassword string `json:"mqtt_password"`
+	GlobalDeviceID string `json:"global_device_id"`
+	DeviceID       string `json:"device_id"`
+	DTID           string `json:"dtid"`
+	DSID           string `json:"dsid"`
+	SerialNumber   string `json:"serial_number"`
+	MQTTUsername   string `json:"mqtt_username"`
+	MQTTPassword   string `json:"mqtt_password"`
 }
 
-// Provision generates keys and registers the device via gateway admin API.
+// ListDeviceTypes returns registry device types for the provision DTID picker.
+func (a *App) ListDeviceTypes() ([]gateway.DeviceType, error) {
+	a.mu.Lock()
+	token := a.accessToken
+	gatewayURL := a.cfg.GatewayURL
+	a.mu.Unlock()
+	if token == "" {
+		return nil, fmt.Errorf("login required")
+	}
+
+	client := gateway.NewClient(gatewayURL)
+	client.AccessToken = token
+	return client.ListDeviceTypes()
+}
+
+// Provision generates keys and registers the device via gateway admin API (v2).
 func (a *App) Provision(req ProvisionRequest) (*ProvisionResult, error) {
+	if strings.TrimSpace(req.DTID) == "" {
+		return nil, fmt.Errorf("device type (dtid) is required — apply registry before first v2 unit")
+	}
+	deviceIDShort := strings.TrimSpace(req.DeviceID)
+	if deviceIDShort == "" {
+		return nil, fmt.Errorf("factory device_id is required")
+	}
+	if strings.Contains(deviceIDShort, "_") || !factoryDeviceIDRE.MatchString(deviceIDShort) {
+		return nil, fmt.Errorf("device_id must be alphanumeric with no underscore (e.g. 00042)")
+	}
 	if req.Serial == "" {
 		return nil, fmt.Errorf("serial number is required")
 	}
@@ -175,17 +208,37 @@ func (a *App) Provision(req ProvisionRequest) (*ProvisionResult, error) {
 		return nil, err
 	}
 
-	result, err := provision.RegisterDevice(gatewayURL, token, req.Serial, hw, keypair.PublicKeyPEM, provisionOverwrite(req.Overwrite))
+	result, err := provision.RegisterDevice(
+		gatewayURL, token, req.DTID, deviceIDShort, req.Serial, hw, keypair.PublicKeyPEM, provisionOverwrite(req.Overwrite),
+	)
 	if err != nil {
 		var apiErr *provision.APIError
-		if errors.As(err, &apiErr) && apiErr.Code == "serial_already_provisioned" && !provisionOverwrite(req.Overwrite) {
-			return nil, fmt.Errorf("serial %q already provisioned — enable Overwrite on the Provision step or set overwrite: true", req.Serial)
+		if errors.As(err, &apiErr) {
+			switch apiErr.Code {
+			case "serial_already_provisioned":
+				if !provisionOverwrite(req.Overwrite) {
+					return nil, fmt.Errorf("serial %q already provisioned — enable Overwrite or use a different serial", req.Serial)
+				}
+			case "unknown_device_type":
+				return nil, fmt.Errorf("dtid %q not in registry — run device-service registry apply before provisioning", req.DTID)
+			case "device_id_conflict":
+				return nil, fmt.Errorf("device_id %q already used for dtid %q", deviceIDShort, req.DTID)
+			case "invalid_provision_request", "invalid_device_id":
+				return nil, fmt.Errorf("invalid provision request — check dtid and device_id")
+			case "device_service_unavailable", "device_service_register_failed":
+				return nil, fmt.Errorf("device service unavailable — ensure registry is applied and device-service is running")
+			}
 		}
 		return nil, err
 	}
 
+	globalID := result.GlobalDeviceID
+	if globalID == "" {
+		globalID = result.DeviceID
+	}
+
 	identityJSON, err := device.BuildIdentityJSON(
-		result.DeviceID, req.Serial, hw, result.MQTTUsername, result.MQTTPassword,
+		globalID, deviceIDShort, req.DTID, result.DSID, req.Serial, hw, result.MQTTUsername, result.MQTTPassword,
 	)
 	if err != nil {
 		return nil, err
@@ -194,16 +247,19 @@ func (a *App) Provision(req ProvisionRequest) (*ProvisionResult, error) {
 	a.mu.Lock()
 	a.pendingPrivateKey = keypair.PrivateKeyPEM
 	a.pendingIdentity = identityJSON
-	a.pendingDeviceID = result.DeviceID
+	a.pendingDeviceID = globalID
 	a.pendingMQTTUser = result.MQTTUsername
 	a.pendingMQTTPass = result.MQTTPassword
 	a.mu.Unlock()
 
 	return &ProvisionResult{
-		DeviceID:     result.DeviceID,
-		SerialNumber: req.Serial,
-		MQTTUsername: result.MQTTUsername,
-		MQTTPassword: result.MQTTPassword,
+		GlobalDeviceID: globalID,
+		DeviceID:       deviceIDShort,
+		DTID:           req.DTID,
+		DSID:           result.DSID,
+		SerialNumber:   req.Serial,
+		MQTTUsername:   result.MQTTUsername,
+		MQTTPassword:   result.MQTTPassword,
 	}, nil
 }
 

@@ -10,13 +10,15 @@ import (
 	"time"
 )
 
-// Result is the auth service provision response.
+// Result is the gateway provision response (v2).
 type Result struct {
-	DeviceID      string `json:"device_id"`
-	SerialNumber  string `json:"serial_number"`
-	MQTTUsername  string `json:"mqtt_username"`
-	MQTTPassword  string `json:"mqtt_password"`
-	ProvisionedAt string `json:"provisioned_at"`
+	DeviceID       string `json:"device_id"`
+	GlobalDeviceID string `json:"global_device_id"`
+	DSID           string `json:"dsid"`
+	SerialNumber   string `json:"serial_number"`
+	MQTTUsername   string `json:"mqtt_username"`
+	MQTTPassword   string `json:"mqtt_password"`
+	ProvisionedAt  string `json:"provisioned_at"`
 }
 
 // APIError carries HTTP status and error code from the gateway/auth.
@@ -33,14 +35,16 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("provision failed: HTTP %d (%s)", e.Status, e.Code)
 }
 
-// RegisterDevice calls POST /admin/devices/provision on the API gateway.
-func RegisterDevice(gatewayURL, accessToken, serial, hwVersion, publicKeyPEM string, overwrite bool) (*Result, error) {
+// RegisterDevice calls POST /admin/devices/provision on the API gateway (v2).
+func RegisterDevice(gatewayURL, accessToken, dtid, deviceID, serial, hwVersion, publicKeyPEM string, overwrite bool) (*Result, error) {
 	base := strings.TrimRight(gatewayURL, "/")
 	body, err := json.Marshal(map[string]any{
-		"serial_number":  serial,
-		"hw_version":     hwVersion,
-		"public_key_pem": publicKeyPEM,
-		"overwrite":      overwrite,
+		"dtid":             dtid,
+		"device_id":        deviceID,
+		"serial_number":    serial,
+		"hardware_version": hwVersion,
+		"public_key_pem":   publicKeyPEM,
+		"overwrite":        overwrite,
 	})
 	if err != nil {
 		return nil, err
@@ -81,6 +85,9 @@ func RegisterDevice(gatewayURL, accessToken, serial, hwVersion, publicKeyPEM str
 	var result Result
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	if result.GlobalDeviceID == "" {
+		result.GlobalDeviceID = result.DeviceID
 	}
 	return &result, nil
 }

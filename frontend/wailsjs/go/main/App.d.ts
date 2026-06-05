@@ -4,12 +4,15 @@ import {discover} from '../models';
 import {config} from '../models';
 import {main} from '../models';
 import {device} from '../models';
+import {gateway} from '../models';
 
 export function DiscoverDevices(arg1:string,arg2:boolean):Promise<Array<discover.Candidate>>;
 
 export function GetConfig():Promise<config.AppConfig>;
 
 export function Install(arg1:main.InstallRequest):Promise<device.InstallResult>;
+
+export function ListDeviceTypes():Promise<Array<gateway.DeviceType>>;
 
 export function Login(arg1:string,arg2:string):Promise<main.LoginResult>;
 

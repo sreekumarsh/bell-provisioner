@@ -14,6 +14,10 @@ export function Install(arg1) {
   return window['go']['main']['App']['Install'](arg1);
 }
 
+export function ListDeviceTypes() {
+  return window['go']['main']['App']['ListDeviceTypes']();
+}
+
 export function Login(arg1, arg2) {
   return window['go']['main']['App']['Login'](arg1, arg2);
 }
