@@ -1,0 +1,13 @@
+---
+description: Only edit files in this repository
+alwaysApply: true
+---
+
+# Repository boundary
+
+- Only create, edit, or delete files under **this repository’s root directory** (`bell-provisioner/`).
+- Do **not** modify sibling Bell repos (`bell-api-gateway`, `bell-auth-service`,
+  `bell-device-management-service`, `bell-event-service`, `bell-stream-service`,
+  `bell-web-app`, `pi-streamer`, `bell-docs`) unless the open workspace **is** that repo.
+- If a task spans services, implement in the **owning** repo first; update `bell-docs` only when
+  explicitly asked or in a follow-up focused on documentation.

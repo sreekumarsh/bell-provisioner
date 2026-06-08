@@ -21,6 +21,8 @@ type AppConfig struct {
 	AgentRepoBranch   string `json:"agent_repo_branch"`
 	AgentRepoPath     string `json:"agent_repo_path"`
 	AgentArtifactName string `json:"agent_artifact_name"`
+	AccessToken       string `json:"access_token,omitempty"`
+	RefreshToken      string `json:"refresh_token,omitempty"`
 }
 
 // Default returns sensible defaults for first launch.

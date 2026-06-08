@@ -2,9 +2,17 @@ import './app.css';
 import {
   GetConfig,
   SaveConfig,
+  GetSession,
   Login,
+  Logout,
   DiscoverDevices,
   ListDeviceTypes,
+  ListCapabilities,
+  ListDeviceFamilies,
+  CreateCapability,
+  CreateDeviceFamily,
+  CreateDeviceType,
+  ApplyRegistry,
   Provision,
   Install,
   Verify,
@@ -13,15 +21,23 @@ import {
 import { config } from '../wailsjs/go/models';
 import type { gateway, main } from '../wailsjs/go/models';
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type View = 'login' | 'dashboard' | 'provision' | 'registry';
+type ProvisionStep = 1 | 2 | 3 | 4;
+type RegistryTab = 'capabilities' | 'families' | 'types';
 
-const stepLabels = ['Environment', 'Login', 'Discover', 'Provision', 'Install'];
+const provisionLabels = ['Environment', 'Discover', 'Provision', 'Install'];
 
-let currentStep: Step = 1;
+let view: View = 'login';
+let provisionStep: ProvisionStep = 1;
+let registryTab: RegistryTab = 'types';
+let loginUser: main.LoginResult | null = null;
 let selectedHost = '';
 let provisionResult: main.ProvisionResult | null = null;
 let savedCfg: config.AppConfig | null = null;
+
 let deviceTypes: gateway.DeviceType[] = [];
+let capabilities: gateway.Capability[] = [];
+let families: gateway.DeviceFamily[] = [];
 
 const state = {
   gatewayURL: 'https://api.vyooham.com',
@@ -60,48 +76,141 @@ async function init() {
   } catch (e) {
     console.error(e);
   }
+  try {
+    const session = await GetSession();
+    if (session.logged_in) {
+      loginUser = {
+        user_id: '',
+        name: session.user_name,
+        phone: session.phone,
+        role: session.role,
+        is_admin: session.role === 'admin',
+      };
+      view = 'dashboard';
+    }
+  } catch (e) {
+    console.error(e);
+  }
   render();
 }
 
 function render() {
   const app = document.getElementById('app')!;
   app.innerHTML = `
-    <h1>Bell Provisioner</h1>
-    <p class="subtitle">Factory / lab device provisioning for VPS or Mac LAN</p>
-    ${renderSteps()}
+    <header class="app-header">
+      <div>
+        <h1>Bell Provisioner</h1>
+        <p class="subtitle">Factory / lab device provisioning</p>
+      </div>
+      ${renderHeaderActions()}
+    </header>
+    ${view === 'provision' ? renderProvisionSteps() : ''}
+    ${view === 'registry' ? renderRegistryTabs() : ''}
     <div class="panel">${renderPanel()}</div>
   `;
   bindEvents();
 }
 
-function renderSteps(): string {
-  return `<div class="steps">${stepLabels.map((label, i) => {
-    const n = (i + 1) as Step;
+function renderHeaderActions(): string {
+  if (view === 'login') return '';
+  const who = loginUser?.name || loginUser?.phone || state.phone;
+  return `
+    <div class="header-actions">
+      <span class="user-badge">${esc(who)} · ${esc(state.gatewayURL)}</span>
+      <button class="secondary" id="btnLogout">Logout</button>
+    </div>`;
+}
+
+function renderProvisionSteps(): string {
+  return `<div class="steps">${provisionLabels.map((label, i) => {
+    const n = (i + 1) as ProvisionStep;
     let cls = 'step-indicator';
-    if (n === currentStep) cls += ' active';
-    else if (n < currentStep) cls += ' done';
+    if (n === provisionStep) cls += ' active';
+    else if (n < provisionStep) cls += ' done';
     return `<div class="${cls}">${n}. ${label}</div>`;
   }).join('')}</div>`;
 }
 
-function renderPanel(): string {
-  switch (currentStep) {
-    case 1: return renderEnv();
-    case 2: return renderLogin();
-    case 3: return renderDiscover();
-    case 4: return renderProvision();
-    case 5: return renderInstall();
-    default: return '';
-  }
+function renderRegistryTabs(): string {
+  const tabs: { id: RegistryTab; label: string }[] = [
+    { id: 'capabilities', label: 'Capabilities' },
+    { id: 'families', label: 'Families' },
+    { id: 'types', label: 'Device types' },
+  ];
+  return `<div class="tabs">${tabs.map(t =>
+    `<button class="tab ${registryTab === t.id ? 'active' : ''}" data-tab="${t.id}">${t.label}</button>`
+  ).join('')}</div>`;
 }
 
-function renderEnv(): string {
+function renderPanel(): string {
+  switch (view) {
+    case 'login': return renderLogin();
+    case 'dashboard': return renderDashboard();
+    case 'provision':
+      switch (provisionStep) {
+        case 1: return renderEnv();
+        case 2: return renderDiscover();
+        case 3: return renderProvision();
+        case 4: return renderInstall();
+      }
+      break;
+    case 'registry':
+      switch (registryTab) {
+        case 'capabilities': return renderRegistryCapabilities();
+        case 'families': return renderRegistryFamilies();
+        case 'types': return renderRegistryTypes();
+      }
+  }
+  return '';
+}
+
+function renderLogin(): string {
   return `
-    <h2>Environment</h2>
+    <h2>Admin login</h2>
+    <p class="hint">Sign in first. After login you can manage the device registry or start a provisioning run.</p>
     <div class="field">
       <label>Gateway URL</label>
       <input id="gatewayURL" value="${esc(state.gatewayURL)}" placeholder="https://api.vyooham.com" />
     </div>
+    <div class="field">
+      <label>Phone (+country code)</label>
+      <input id="phone" value="${esc(state.phone)}" placeholder="+919876543210" />
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input id="password" type="password" />
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnLogin">Login</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderDashboard(): string {
+  return `
+    <h2>Dashboard</h2>
+    <p class="hint">Welcome${loginUser?.name ? `, ${esc(loginUser.name)}` : ''}. Choose an action below.</p>
+    <div class="dashboard-grid">
+      <button class="dashboard-card" id="btnStartProvision">
+        <strong>Start provisioning</strong>
+        <span>Configure environment, discover a Pi, register in cloud, and install credentials.</span>
+      </button>
+      <button class="dashboard-card" id="btnOpenRegistry">
+        <strong>Device registry</strong>
+        <span>Manage capabilities, families, and device types via admin API.</span>
+      </button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderEnv(): string {
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+    </div>
+    <h2>Environment</h2>
     <div class="field">
       <label>Target backend</label>
       <select id="backendProfile">
@@ -117,7 +226,6 @@ function renderEnv(): string {
       <div class="field">
         <label>SSH user (Pi Linux account)</label>
         <input id="sshUser" value="${esc(state.sshUser)}" placeholder="sreekumar" />
-        <p style="color:var(--muted);font-size:0.85rem;margin:4px 0 0">Pi login from Raspberry Pi Imager (lowercase). Not your Mac username.</p>
       </div>
       <div class="field">
         <label>SSH host</label>
@@ -131,18 +239,12 @@ function renderEnv(): string {
     <div class="field">
       <label>SSH password</label>
       <input id="sshPassword" type="password" autocomplete="off" />
-      <p style="color:var(--muted);font-size:0.85rem;margin:8px 0 0">
-        Password auth only (Mac SSH keys are not used). Saved to local config when you continue.
-      </p>
-      ${state.sshPassword ? '<p style="color:var(--success);font-size:0.85rem;margin:4px 0 0">SSH password saved in config</p>' : ''}
+      ${state.sshPassword ? '<p class="field-note success">SSH password saved in config</p>' : ''}
     </div>
     <div class="field">
       <label>GitHub token (read-only)</label>
       <input id="githubToken" type="password" autocomplete="off" placeholder="${state.githubToken ? 'leave blank to keep saved token' : 'ghp_… or github_pat_…'}" />
-      ${state.githubToken ? '<p style="color:var(--success);font-size:0.85rem;margin:4px 0 0">GitHub token saved in config</p>' : ''}
-      <p style="color:var(--muted);font-size:0.85rem;margin:8px 0 0">
-        Downloads the latest <code>doorbell-agent-linux-arm64</code> artifact. Saved to local config when you continue (not in git).
-      </p>
+      ${state.githubToken ? '<p class="field-note success">GitHub token saved in config</p>' : ''}
     </div>
     <div class="actions">
       <button class="primary" id="btnNextEnv">Continue</button>
@@ -151,32 +253,14 @@ function renderEnv(): string {
   `;
 }
 
-function renderLogin(): string {
-  return `
-    <h2>Admin login</h2>
-    <div class="field">
-      <label>Phone (+country code)</label>
-      <input id="phone" value="${esc(state.phone)}" placeholder="+919876543210" />
-    </div>
-    <div class="field">
-      <label>Password</label>
-      <input id="password" type="password" />
-    </div>
-    <div class="actions">
-      <button class="secondary" id="btnBack">Back</button>
-      <button class="primary" id="btnLogin">Login</button>
-    </div>
-    <div id="msg"></div>
-  `;
-}
-
 function renderDiscover(): string {
   const host = selectedHost || state.sshHost;
   return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+    </div>
     <h2>Discover device</h2>
-    <p style="color:var(--muted);font-size:0.85rem;margin:0 0 16px">
-      SSH host from Environment is pre-selected (<strong>${esc(host)}</strong>). Use <em>Continue</em> directly, or scan the LAN to find other Pis.
-    </p>
+    <p class="hint">SSH host from Environment is pre-selected (<strong>${esc(host)}</strong>).</p>
     <div class="field">
       <label>Extra host to probe (optional)</label>
       <input id="manualHost" value="${esc(state.manualHost)}" placeholder="192.168.1.42" />
@@ -203,24 +287,23 @@ function renderProvision(): string {
         .filter(t => !t.deprecated)
         .map(t => `<option value="${esc(t.dtid)}" ${state.dtid === t.dtid ? 'selected' : ''}>${esc(t.friendly_name || t.dtid)} (${esc(t.dtid)})</option>`)
         .join('')
-    : '<option value="">Loading types…</option>';
+    : '<option value="">No types — add one in Device registry</option>';
 
   return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+    </div>
     <h2>Provision in cloud (v2)</h2>
-    <p style="color:var(--muted);font-size:0.85rem;margin:0 0 16px">
-      Apply the device-service registry (<code>tools/device-registry apply</code>) before the first v2 unit.
-    </p>
     <div class="field">
       <label>Device type (DTID)</label>
       <select id="dtid">${typeOptions}</select>
     </div>
     <div class="field">
-      <label>Factory device_id (per-type unit number)</label>
+      <label>Factory device_id</label>
       <input id="factoryDeviceID" value="${esc(state.factoryDeviceID)}" placeholder="00042" />
-      <p style="color:var(--muted);font-size:0.85rem;margin:4px 0 0">Alphanumeric, no underscore. Composes <code>global_device_id = dtid_device_id</code>.</p>
     </div>
     <div class="field">
-      <label>Serial number (from device label)</label>
+      <label>Serial number</label>
       <input id="serial" value="${esc(state.serial)}" placeholder="DB-2605-0042" />
     </div>
     <div class="field">
@@ -229,7 +312,7 @@ function renderProvision(): string {
     </div>
     <label class="checkbox-field">
       <input type="checkbox" id="overwriteSerial" ${state.overwriteSerial ? 'checked' : ''} />
-      Overwrite if serial already provisioned (re-provision with new keys)
+      Overwrite if serial already provisioned
     </label>
     <div class="actions">
       <button class="secondary" id="btnBack">Back</button>
@@ -245,18 +328,19 @@ function renderInstall(): string {
     <div class="summary">
       <strong>global_device_id:</strong> <code>${esc(provisionResult.global_device_id)}</code><br/>
       <strong>DSID:</strong> <code>${esc(provisionResult.dsid)}</code><br/>
-      <strong>DTID:</strong> <code>${esc(provisionResult.dtid)}</code> · unit <code>${esc(provisionResult.device_id)}</code><br/>
-      <strong>Serial:</strong> ${esc(provisionResult.serial_number)}<br/>
-      <strong>MQTT user:</strong> <code>${esc(provisionResult.mqtt_username)}</code>
+      <strong>DTID:</strong> <code>${esc(provisionResult.dtid)}</code> · unit <code>${esc(provisionResult.device_id)}</code>
     </div>
   ` : '';
 
   return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+    </div>
     <h2>Install on device</h2>
     ${summary}
     <div class="field" style="margin-top:16px">
       <label>SSH password override (optional)</label>
-      <input id="sshPasswordOverride" type="password" autocomplete="off" placeholder="${state.sshPassword ? 'Using Environment password' : 'Required if not set on Environment'}" />
+      <input id="sshPasswordOverride" type="password" autocomplete="off" />
     </div>
     <label class="checkbox-field">
       <input type="checkbox" id="checkoutAgent" ${state.checkoutAgent ? 'checked' : ''} />
@@ -266,9 +350,6 @@ function renderInstall(): string {
       <input type="checkbox" id="deployAgentEnv" ${state.deployAgentEnv ? 'checked' : ''} />
       Deploy agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}
     </label>
-    <p class="hint" style="margin-top:8px;color:var(--muted);font-size:13px">
-      Requires a read-only GitHub token on Environment (Actions read + private repo access).
-    </p>
     <div class="actions">
       <button class="secondary" id="btnBack">Back</button>
       <button class="primary" id="btnInstall">Install on Pi</button>
@@ -279,180 +360,358 @@ function renderInstall(): string {
   `;
 }
 
+function renderRegistryCapabilities(): string {
+  const rows = capabilities.length
+    ? capabilities.map(c => `
+      <tr>
+        <td><code>${esc(c.capid)}</code></td>
+        <td>${esc(c.friendly_name)}</td>
+        <td>${esc(c.layer)}</td>
+        <td>${c.deprecated ? 'yes' : '—'}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">No capabilities yet</td></tr>';
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+      <button class="secondary" id="btnRefreshRegistry">Refresh</button>
+    </div>
+    <h2>Capabilities</h2>
+    <table class="registry-table">
+      <thead><tr><th>CAPID</th><th>Name</th><th>Layer</th><th>Deprecated</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <h3 class="section-title">Add capability</h3>
+    <div class="row">
+      <div class="field"><label>CAPID</label><input id="newCapID" placeholder="cap_cam00001" /></div>
+      <div class="field"><label>Name</label><input id="newCapName" placeholder="Camera" /></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Layer</label>
+        <select id="newCapLayer">
+          <option value="intrinsic">intrinsic</option>
+          <option value="runtime">runtime</option>
+        </select>
+      </div>
+      <div class="field"><label>Description</label><input id="newCapDesc" placeholder="Optional" /></div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnCreateCap">Create capability</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderRegistryFamilies(): string {
+  const rows = families.length
+    ? families.map(f => `
+      <tr>
+        <td><code>${esc(f.dfid)}</code></td>
+        <td>${esc(f.friendly_name)}</td>
+        <td>${esc(f.description || '')}</td>
+        <td>${f.deprecated ? 'yes' : '—'}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">No families yet</td></tr>';
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+      <button class="secondary" id="btnRefreshRegistry">Refresh</button>
+    </div>
+    <h2>Device families</h2>
+    <table class="registry-table">
+      <thead><tr><th>DFID</th><th>Name</th><th>Description</th><th>Deprecated</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <h3 class="section-title">Add family</h3>
+    <div class="row">
+      <div class="field"><label>DFID</label><input id="newDFID" placeholder="df_door0001" /></div>
+      <div class="field"><label>Name</label><input id="newFamilyName" placeholder="Doorbells" /></div>
+    </div>
+    <div class="field"><label>Description</label><input id="newFamilyDesc" placeholder="Optional" /></div>
+    <div class="actions">
+      <button class="primary" id="btnCreateFamily">Create family</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderRegistryTypes(): string {
+  const rows = deviceTypes.length
+    ? deviceTypes.map(t => `
+      <tr>
+        <td><code>${esc(t.dtid)}</code></td>
+        <td>${esc(t.friendly_name)}</td>
+        <td><code>${esc(t.dfid)}</code></td>
+        <td>${(t.capabilities || []).map(c => `<code>${esc(c)}</code>`).join(' ') || '—'}</td>
+        <td>${t.deprecated ? 'yes' : '—'}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="empty">No device types yet</td></tr>';
+
+  const familyOptions = families.map(f =>
+    `<option value="${esc(f.dfid)}">${esc(f.friendly_name || f.dfid)}</option>`
+  ).join('');
+
+  const capChecks = capabilities.filter(c => !c.deprecated).map(c => `
+    <label class="checkbox-field cap-check">
+      <input type="checkbox" class="newTypeCap" value="${esc(c.capid)}" />
+      <span><code>${esc(c.capid)}</code> · ${esc(c.friendly_name)}</span>
+    </label>
+  `).join('') || '<p class="hint">Create capabilities first.</p>';
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+      <button class="secondary" id="btnRefreshRegistry">Refresh</button>
+    </div>
+    <h2>Device types</h2>
+    <table class="registry-table">
+      <thead><tr><th>DTID</th><th>Name</th><th>Family</th><th>Capabilities</th><th>Deprecated</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <h3 class="section-title">Add device type</h3>
+    <div class="row">
+      <div class="field"><label>DTID</label><input id="newDTID" placeholder="dt_wired0002" /></div>
+      <div class="field">
+        <label>Family (DFID)</label>
+        <select id="newTypeDFID">${familyOptions || '<option value="">Create a family first</option>'}</select>
+      </div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Name</label><input id="newTypeName" placeholder="Wired doorbell v2" /></div>
+      <div class="field"><label>Description</label><input id="newTypeDesc" placeholder="Optional" /></div>
+    </div>
+    <div class="field">
+      <label>Capabilities</label>
+      <div class="cap-grid">${capChecks}</div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnCreateType">Create device type</button>
+    </div>
+    <h3 class="section-title">Apply server registry YAML</h3>
+    <p class="hint">Re-applies <code>registry/registry.yaml</code> on the device service (VPS). Use dry-run first.</p>
+    <div class="actions">
+      <button class="secondary" id="btnApplyDryRun">Dry run</button>
+      <button class="primary" id="btnApplyRegistry">Apply YAML</button>
+    </div>
+    <div id="applyResult"></div>
+    <div id="msg"></div>
+  `;
+}
+
 function bindEvents() {
+  document.getElementById('btnLogout')?.addEventListener('click', () => {
+    void doLogout();
+  });
+
+  document.getElementById('btnLogin')?.addEventListener('click', () => void doLogin());
+
+  document.getElementById('btnStartProvision')?.addEventListener('click', () => {
+    provisionStep = 1;
+    provisionResult = null;
+    view = 'provision';
+    render();
+  });
+
+  document.getElementById('btnOpenRegistry')?.addEventListener('click', () => {
+    registryTab = 'types';
+    view = 'registry';
+    void loadRegistryData();
+  });
+
+  document.getElementById('btnBackDashboard')?.addEventListener('click', () => {
+    view = 'dashboard';
+    render();
+  });
+
+  document.querySelectorAll('.tab').forEach(el => {
+    el.addEventListener('click', () => {
+      registryTab = el.getAttribute('data-tab') as RegistryTab;
+      render();
+    });
+  });
+
+  document.getElementById('btnRefreshRegistry')?.addEventListener('click', () => void loadRegistryData());
+
+  document.getElementById('btnCreateCap')?.addEventListener('click', () => void createCapability());
+  document.getElementById('btnCreateFamily')?.addEventListener('click', () => void createFamily());
+  document.getElementById('btnCreateType')?.addEventListener('click', () => void createDeviceType());
+  document.getElementById('btnApplyDryRun')?.addEventListener('click', () => void runApplyRegistry(true));
+  document.getElementById('btnApplyRegistry')?.addEventListener('click', () => void runApplyRegistry(false));
+
   document.getElementById('btnBack')?.addEventListener('click', () => {
-    if (currentStep > 1) {
-      currentStep = (currentStep - 1) as Step;
+    if (view === 'provision' && provisionStep > 1) {
+      provisionStep = (provisionStep - 1) as ProvisionStep;
       render();
     }
   });
 
-  document.getElementById('btnNextEnv')?.addEventListener('click', async () => {
-    readEnvFields();
-    const pw = sshPassword();
-    if (!pw) {
-      setMsg('SSH password is required', true);
-      return;
-    }
-    state.sshPassword = pw;
-    const gh = githubToken();
-    if (!gh) {
-      setMsg('GitHub token is required to download the agent CI artifact', true);
-      return;
-    }
-    state.githubToken = gh;
-    const cfg = buildAppConfig({ github_token: gh, ssh_password: pw });
-    await SaveConfig(cfg);
-    savedCfg = cfg;
-    currentStep = 2;
-    render();
-  });
+  document.getElementById('btnNextEnv')?.addEventListener('click', () => void saveEnvAndContinue());
 
   document.getElementById('backendProfile')?.addEventListener('change', (e) => {
     state.backendProfile = (e.target as HTMLSelectElement).value;
     document.getElementById('macIPField')?.classList.toggle('hidden', state.backendProfile !== 'mac');
   });
 
-  document.getElementById('btnLogin')?.addEventListener('click', async () => {
-    state.phone = val('phone');
-    state.password = val('password');
-    setMsg('Logging in…');
-    try {
-      const result = await Login(state.phone, state.password);
-      setMsg(`Logged in as ${result.name || result.phone} (${result.role})`, false);
-      currentStep = 3;
-      initDiscoverStep();
-      setTimeout(render, 600);
-    } catch (e: any) {
-      setMsg(e?.message || String(e), true);
-    }
-  });
+  document.getElementById('btnProbeHost')?.addEventListener('click', () => void runDiscover(false));
+  document.getElementById('btnScan')?.addEventListener('click', () => void runDiscover(true));
 
-  document.getElementById('btnProbeHost')?.addEventListener('click', () => {
-    void runDiscover(false);
-  });
-
-  document.getElementById('btnScan')?.addEventListener('click', () => {
-    void runDiscover(true);
-  });
-
-  document.getElementById('btnTestSSH')?.addEventListener('click', async () => {
-    selectedHost = val('selectedHost') || selectedHost;
-    const pw = sshPassword();
-    if (!pw) {
-      setMsg('Set SSH password on the Environment step first', true);
-      return;
-    }
-    setMsg('Testing SSH…');
-    try {
-      await TestSSH(selectedHost, state.sshUser, state.sshPort, pw);
-      setMsg('SSH connection OK', false);
-    } catch (e: any) {
-      setMsg(e?.message || String(e), true);
-    }
-  });
+  document.getElementById('btnTestSSH')?.addEventListener('click', () => void testSSH());
 
   document.getElementById('btnNextDiscover')?.addEventListener('click', () => {
     selectedHost = val('selectedHost') || selectedHost || state.sshHost;
     if (!selectedHost) {
-      setMsg('Enter a device host (or set SSH host on Environment)', true);
+      setMsg('Enter a device host', true);
       return;
     }
     state.sshHost = selectedHost;
-    currentStep = 4;
+    provisionStep = 3;
     void loadDeviceTypes();
     render();
   });
 
-  document.getElementById('btnProvision')?.addEventListener('click', async () => {
-    state.dtid = val('dtid');
-    state.factoryDeviceID = val('factoryDeviceID');
-    state.serial = val('serial');
-    state.hwVersion = val('hwVersion') || '1.1';
-    state.overwriteSerial = (document.getElementById('overwriteSerial') as HTMLInputElement)?.checked ?? true;
-    if (!state.dtid) {
-      setMsg('Select a device type (DTID) — apply registry first if the list is empty', true);
-      return;
-    }
-    if (!state.factoryDeviceID) {
-      setMsg('Factory device_id is required', true);
-      return;
-    }
-    setMsg('Provisioning…');
-    try {
-      provisionResult = await Provision({
-        dtid: state.dtid,
-        device_id: state.factoryDeviceID,
-        serial: state.serial,
-        hw_version: state.hwVersion,
-        overwrite: state.overwriteSerial,
-      });
-      document.getElementById('provisionSummary')!.innerHTML = `
-        <div class="success summary" style="margin-top:16px">
-          Registered <strong>${esc(provisionResult!.global_device_id)}</strong><br/>
-          DSID <code>${esc(provisionResult!.dsid)}</code> for QR claim · MQTT password written on install.
-        </div>`;
-      setMsg('');
-      currentStep = 5;
-      setTimeout(render, 800);
-    } catch (e: any) {
-      setMsg(e?.message || String(e), true);
-    }
-  });
+  document.getElementById('btnProvision')?.addEventListener('click', () => void doProvision());
 
-  document.getElementById('btnInstall')?.addEventListener('click', async () => {
-    const pw = sshPassword();
-    if (!pw) {
-      setMsg('SSH password is required (Environment step or override below)', true);
-      return;
-    }
-    const gh = githubToken();
-    if (state.checkoutAgent && !gh) {
-      setMsg('GitHub token is required (Environment step)', true);
-      return;
-    }
-    state.sshPassword = pw;
-    state.deployAgentEnv = (document.getElementById('deployAgentEnv') as HTMLInputElement)?.checked ?? true;
-    state.checkoutAgent = (document.getElementById('checkoutAgent') as HTMLInputElement)?.checked ?? true;
-    setMsg('Installing via SSH…');
-    try {
-      const result = await Install({
-        host: selectedHost || state.sshHost,
-        ssh_user: state.sshUser,
-        ssh_port: state.sshPort,
-        ssh_password: pw,
-        deploy_agent_env: state.deployAgentEnv,
-        checkout_agent: state.checkoutAgent,
-        github_token: githubToken(),
-      });
-      setMsg(result.message + (result.agent_active ? ' · Agent active' : ''), !result.agent_active);
-    } catch (e: any) {
-      setMsg(e?.message || String(e), true);
-    }
-  });
-
-  document.getElementById('btnVerify')?.addEventListener('click', async () => {
-    setMsg('Verifying MQTT…');
-    try {
-      const result = await Verify({
-        device_id: provisionResult?.global_device_id || '',
-        mqtt_username: provisionResult?.mqtt_username || '',
-        mqtt_password: provisionResult?.mqtt_password || '',
-      });
-      document.getElementById('verifyResult')!.innerHTML = `
-        <div class="${result.mqtt.connected ? 'success' : 'error'}" style="margin-top:12px">
-          ${esc(result.mqtt.message)}
-        </div>`;
-      setMsg('');
-    } catch (e: any) {
-      setMsg(e?.message || String(e), true);
-    }
-  });
+  document.getElementById('btnInstall')?.addEventListener('click', () => void doInstall());
+  document.getElementById('btnVerify')?.addEventListener('click', () => void doVerify());
 }
 
-function initDiscoverStep() {
-  selectedHost = state.sshHost;
-  if (!state.manualHost) state.manualHost = state.sshHost;
+async function doLogin() {
+  state.gatewayURL = val('gatewayURL') || state.gatewayURL;
+  state.phone = val('phone');
+  state.password = val('password');
+  setMsg('Logging in…');
+  try {
+    await SaveConfig(buildAppConfig({ gateway_url: state.gatewayURL, phone: state.phone }));
+    loginUser = await Login(state.phone, state.password);
+    view = 'dashboard';
+    setMsg('');
+    render();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function doLogout() {
+  Logout();
+  loginUser = null;
+  view = 'login';
+  render();
+}
+
+async function saveEnvAndContinue() {
+  readEnvFields();
+  const pw = sshPassword();
+  if (!pw) {
+    setMsg('SSH password is required', true);
+    return;
+  }
+  state.sshPassword = pw;
+  const gh = githubToken();
+  if (!gh) {
+    setMsg('GitHub token is required to download the agent CI artifact', true);
+    return;
+  }
+  state.githubToken = gh;
+  const cfg = buildAppConfig({ github_token: gh, ssh_password: pw });
+  await SaveConfig(cfg);
+  savedCfg = cfg;
+  provisionStep = 2;
+  initDiscoverStep();
+  render();
+}
+
+async function loadRegistryData() {
+  setMsg('Loading registry…');
+  try {
+    const [caps, fams, types] = await Promise.all([
+      ListCapabilities(),
+      ListDeviceFamilies(),
+      ListDeviceTypes(),
+    ]);
+    capabilities = caps ?? [];
+    families = fams ?? [];
+    deviceTypes = types ?? [];
+    setMsg('');
+    if (view === 'registry') render();
+  } catch (e: any) {
+    setMsg(formatRegistryError(e?.message || 'Failed to load registry'), true);
+    if (view === 'registry') render();
+  }
+}
+
+async function createCapability() {
+  setMsg('Creating capability…');
+  try {
+    await CreateCapability({
+      capid: val('newCapID'),
+      friendly_name: val('newCapName'),
+      layer: val('newCapLayer') || 'intrinsic',
+      description: val('newCapDesc'),
+      deprecated: false,
+    });
+    setMsg('Capability created', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function createFamily() {
+  setMsg('Creating family…');
+  try {
+    await CreateDeviceFamily({
+      dfid: val('newDFID'),
+      friendly_name: val('newFamilyName'),
+      description: val('newFamilyDesc'),
+      deprecated: false,
+    });
+    setMsg('Family created', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function createDeviceType() {
+  const caps = Array.from(document.querySelectorAll<HTMLInputElement>('.newTypeCap:checked'))
+    .map(el => el.value);
+  setMsg('Creating device type…');
+  try {
+    await CreateDeviceType({
+      dtid: val('newDTID'),
+      dfid: val('newTypeDFID'),
+      friendly_name: val('newTypeName'),
+      description: val('newTypeDesc'),
+      capabilities: caps,
+      deprecated: false,
+    });
+    setMsg('Device type created', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function runApplyRegistry(dryRun: boolean) {
+  setMsg(dryRun ? 'Running dry-run…' : 'Applying registry…');
+  try {
+    const result = await ApplyRegistry(dryRun);
+    const el = document.getElementById('applyResult');
+    if (el) {
+      el.innerHTML = `
+        <div class="summary" style="margin-top:12px">
+          <strong>Added (${result.added?.length || 0}):</strong> ${(result.added || []).join(', ') || '—'}<br/>
+          <strong>Updated (${result.updated?.length || 0}):</strong> ${(result.updated || []).join(', ') || '—'}<br/>
+          <strong>Rejected (${result.rejected?.length || 0}):</strong> ${(result.rejected || []).join('; ') || '—'}
+        </div>`;
+    }
+    setMsg(dryRun ? 'Dry-run complete' : 'Registry apply complete', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
 }
 
 async function loadDeviceTypes() {
@@ -462,13 +721,129 @@ async function loadDeviceTypes() {
       const active = deviceTypes.find(t => !t.deprecated);
       if (active) state.dtid = active.dtid;
     }
-    if (currentStep === 4) render();
+    if (view === 'provision' && provisionStep === 3) render();
   } catch (e: any) {
     deviceTypes = [];
-    if (currentStep === 4) {
+    if (view === 'provision' && provisionStep === 3) {
       render();
-      setMsg(e?.message || 'Failed to load device types — login and apply registry first', true);
+      setMsg(formatRegistryError(e?.message || 'Failed to load device types'), true);
     }
+  }
+}
+
+function formatRegistryError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes('login required') || lower.includes('missing_token') || lower.includes('invalid or has expired')) {
+    return 'Session expired — use Logout, log in again, then open the provision step';
+  }
+  if (lower.includes('forbidden') || lower.includes('admin access')) {
+    return 'Admin access required — your account needs role=admin on the gateway';
+  }
+  return message;
+}
+
+function initDiscoverStep() {
+  selectedHost = state.sshHost;
+  if (!state.manualHost) state.manualHost = state.sshHost;
+}
+
+async function doProvision() {
+  state.dtid = val('dtid');
+  state.factoryDeviceID = val('factoryDeviceID');
+  state.serial = val('serial');
+  state.hwVersion = val('hwVersion') || '1.1';
+  state.overwriteSerial = (document.getElementById('overwriteSerial') as HTMLInputElement)?.checked ?? true;
+  if (!state.dtid) {
+    setMsg('Select a device type — add one in Device registry if empty', true);
+    return;
+  }
+  if (!state.factoryDeviceID) {
+    setMsg('Factory device_id is required', true);
+    return;
+  }
+  setMsg('Provisioning…');
+  try {
+    provisionResult = await Provision({
+      dtid: state.dtid,
+      device_id: state.factoryDeviceID,
+      serial: state.serial,
+      hw_version: state.hwVersion,
+      overwrite: state.overwriteSerial,
+    });
+    provisionStep = 4;
+    render();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function doInstall() {
+  const pw = sshPassword();
+  if (!pw) {
+    setMsg('SSH password is required', true);
+    return;
+  }
+  const gh = githubToken();
+  if (state.checkoutAgent && !gh) {
+    setMsg('GitHub token is required (Environment step)', true);
+    return;
+  }
+  state.deployAgentEnv = (document.getElementById('deployAgentEnv') as HTMLInputElement)?.checked ?? true;
+  state.checkoutAgent = (document.getElementById('checkoutAgent') as HTMLInputElement)?.checked ?? true;
+  setMsg('Installing via SSH…');
+  try {
+    const result = await Install({
+      host: selectedHost || state.sshHost,
+      ssh_user: state.sshUser,
+      ssh_port: state.sshPort,
+      ssh_password: pw,
+      deploy_agent_env: state.deployAgentEnv,
+      checkout_agent: state.checkoutAgent,
+      github_token: gh,
+    });
+    const depsOk = result.ffmpeg_ok && result.go2rtc_ok && result.motion_ok;
+    const suffix = [
+      depsOk ? 'deps OK' : '',
+      result.setup_server_ok ? 'Setup mode (:4444)' : '',
+      result.agent_active ? 'Agent active' : '',
+    ].filter(Boolean).join(' · ');
+    setMsg(result.message + (suffix ? ' · ' + suffix : ''), !depsOk || !result.setup_server_ok || !result.agent_active);
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function doVerify() {
+  setMsg('Verifying MQTT…');
+  try {
+    const result = await Verify({
+      device_id: provisionResult?.global_device_id || '',
+      mqtt_username: provisionResult?.mqtt_username || '',
+      mqtt_password: provisionResult?.mqtt_password || '',
+    });
+    document.getElementById('verifyResult')!.innerHTML = `
+      <div class="${result.mqtt.connected ? 'success' : 'error'}" style="margin-top:12px">
+        ${esc(result.mqtt.message)}
+      </div>`;
+    setMsg('');
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function testSSH() {
+  selectedHost = val('selectedHost') || selectedHost;
+  const pw = sshPassword();
+  if (!pw) {
+    setMsg('Set SSH password on the Environment step first', true);
+    return;
+  }
+  setMsg('Testing SSH…');
+  try {
+    await TestSSH(selectedHost, state.sshUser, state.sshPort, pw);
+    setMsg('SSH connection OK', false);
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
   }
 }
 
@@ -477,23 +852,19 @@ async function runDiscover(fullLAN: boolean) {
   const list = document.getElementById('deviceList');
   if (!list) return;
   list.innerHTML = fullLAN
-    ? '<li class="spinner">Scanning LAN… (may take up to 45s)</li>'
+    ? '<li class="spinner">Scanning LAN…</li>'
     : '<li class="spinner">Probing configured host…</li>';
   setMsg('');
   try {
     const devices = (await DiscoverDevices(state.manualHost, fullLAN)) ?? [];
     if (devices.length === 0) {
-      list.innerHTML = '<li style="cursor:default;color:var(--muted)">No SSH/setup on probed hosts — check IP or use Selected host below</li>';
+      list.innerHTML = '<li style="cursor:default;color:var(--muted)">No SSH on probed hosts</li>';
       return;
     }
     list.innerHTML = devices.map(d => `
       <li data-host="${esc(d.host)}" data-serial="${esc(d.serial_number || '')}">
         <strong>${esc(d.host)}</strong>
-        <div class="meta">
-          SSH: ${d.ssh_reachable ? '✓' : '✗'}
-          · Setup :4444: ${d.setup_server ? '✓' : '✗'}
-          ${d.serial_number ? ` · Serial: ${esc(d.serial_number)}` : ''}
-        </div>
+        <div class="meta">SSH: ${d.ssh_reachable ? '✓' : '✗'} · Setup: ${d.setup_server ? '✓' : '✗'}</div>
       </li>
     `).join('');
     list.querySelectorAll('li[data-host]').forEach(li => {
@@ -533,7 +904,6 @@ function buildAppConfig(overrides: Partial<config.AppConfig> = {}): config.AppCo
 }
 
 function readEnvFields() {
-  state.gatewayURL = val('gatewayURL');
   state.backendProfile = (document.getElementById('backendProfile') as HTMLSelectElement)?.value || 'vps';
   state.sshUser = val('sshUser').toLowerCase();
   state.sshHost = val('sshHost');
@@ -551,12 +921,10 @@ function isNewGitHubToken(value: string): boolean {
   return t.startsWith('ghp_') || t.startsWith('github_pat_') || t.startsWith('gho_');
 }
 
-/** Pi SSH password: Environment field, install override, or session state. */
 function sshPassword(): string {
   return val('sshPasswordOverride') || val('sshPassword') || state.sshPassword;
 }
 
-/** GitHub PAT for agent artifact download (new input, or saved config / session). */
 function githubToken(): string {
   const entered = val('githubToken');
   if (isNewGitHubToken(entered)) return entered.trim();

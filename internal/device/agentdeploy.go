@@ -23,10 +23,6 @@ func DeployAgentBundle(client *ssh.Client, sudoPassword string, bundle *agentrel
 		return fmt.Errorf("agent bundle missing systemd unit")
 	}
 
-	if err := installStreamingDeps(client, sudoPassword); err != nil {
-		return err
-	}
-
 	if err := uploadFile(client, "/tmp/doorbell-agent", bundle.Binary, 0755); err != nil {
 		return fmt.Errorf("upload agent binary: %w", err)
 	}

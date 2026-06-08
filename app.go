@@ -39,7 +39,12 @@ type App struct {
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
-	return &App{cfg: appcfg.Load()}
+	cfg := appcfg.Load()
+	return &App{
+		cfg:          cfg,
+		accessToken:  cfg.AccessToken,
+		refreshToken: cfg.RefreshToken,
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -93,6 +98,8 @@ func (a *App) Login(phone, password string) (*LoginResult, error) {
 	a.userName = resp.User.Name
 	a.userRole = resp.User.Role
 	a.cfg.Phone = phone
+	a.cfg.AccessToken = resp.AccessToken
+	a.cfg.RefreshToken = resp.RefreshToken
 	_ = appcfg.Save(a.cfg)
 	a.mu.Unlock()
 
@@ -102,6 +109,155 @@ func (a *App) Login(phone, password string) (*LoginResult, error) {
 		Phone:   resp.User.Phone,
 		Role:    resp.User.Role,
 		IsAdmin: true,
+	}, nil
+}
+
+// SessionInfo describes the current operator session (in-memory JWT).
+type SessionInfo struct {
+	LoggedIn   bool   `json:"logged_in"`
+	UserName   string `json:"user_name"`
+	Phone      string `json:"phone"`
+	Role       string `json:"role"`
+	GatewayURL string `json:"gateway_url"`
+}
+
+// GetSession returns whether an admin JWT is held in memory.
+func (a *App) GetSession() SessionInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return SessionInfo{
+		LoggedIn:   a.accessToken != "",
+		UserName:   a.userName,
+		Phone:      a.cfg.Phone,
+		Role:       a.userRole,
+		GatewayURL: a.cfg.GatewayURL,
+	}
+}
+
+// Logout clears the in-memory admin session.
+func (a *App) Logout() {
+	a.mu.Lock()
+	a.accessToken = ""
+	a.refreshToken = ""
+	a.userName = ""
+	a.userRole = ""
+	a.cfg.AccessToken = ""
+	a.cfg.RefreshToken = ""
+	a.pendingPrivateKey = nil
+	a.pendingIdentity = nil
+	a.pendingDeviceID = ""
+	a.pendingMQTTUser = ""
+	a.pendingMQTTPass = ""
+	_ = appcfg.Save(a.cfg)
+	a.mu.Unlock()
+}
+
+func (a *App) adminClient() (*gateway.Client, error) {
+	a.mu.Lock()
+	token := a.accessToken
+	gatewayURL := a.cfg.GatewayURL
+	a.mu.Unlock()
+	if token == "" {
+		return nil, fmt.Errorf("login required")
+	}
+	client := gateway.NewClient(gatewayURL)
+	client.AccessToken = token
+	return client, nil
+}
+
+// ListCapabilities returns registry capabilities.
+func (a *App) ListCapabilities() ([]gateway.Capability, error) {
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListCapabilities()
+}
+
+// CreateCapability adds a capability via POST /admin/capabilities.
+func (a *App) CreateCapability(cap gateway.Capability) (*gateway.Capability, error) {
+	if strings.TrimSpace(cap.CapID) == "" {
+		return nil, fmt.Errorf("capid is required")
+	}
+	if strings.TrimSpace(cap.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	if cap.Layer != "intrinsic" && cap.Layer != "runtime" {
+		return nil, fmt.Errorf("layer must be intrinsic or runtime")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.CreateCapability(cap)
+}
+
+// ListDeviceFamilies returns registry families.
+func (a *App) ListDeviceFamilies() ([]gateway.DeviceFamily, error) {
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListDeviceFamilies()
+}
+
+// CreateDeviceFamily adds a family via POST /admin/device-families.
+func (a *App) CreateDeviceFamily(family gateway.DeviceFamily) (*gateway.DeviceFamily, error) {
+	if strings.TrimSpace(family.DFID) == "" {
+		return nil, fmt.Errorf("dfid is required")
+	}
+	if strings.TrimSpace(family.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.CreateDeviceFamily(family)
+}
+
+// CreateDeviceType adds a type via POST /admin/device-types.
+func (a *App) CreateDeviceType(typ gateway.DeviceType) (*gateway.DeviceType, error) {
+	if strings.TrimSpace(typ.DTID) == "" {
+		return nil, fmt.Errorf("dtid is required")
+	}
+	if strings.TrimSpace(typ.DFID) == "" {
+		return nil, fmt.Errorf("dfid is required")
+	}
+	if strings.TrimSpace(typ.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	if len(typ.Capabilities) == 0 {
+		return nil, fmt.Errorf("at least one capability is required")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.CreateDeviceType(typ)
+}
+
+// ApplyRegistryResult wraps gateway apply output for the UI.
+type ApplyRegistryResult struct {
+	Added    []string `json:"added"`
+	Updated  []string `json:"updated"`
+	Rejected []string `json:"rejected"`
+}
+
+// ApplyRegistry applies the server-side registry YAML (POST /admin/device-registry/apply).
+func (a *App) ApplyRegistry(dryRun bool) (*ApplyRegistryResult, error) {
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	result, err := client.ApplyRegistry(dryRun)
+	if err != nil {
+		return nil, err
+	}
+	return &ApplyRegistryResult{
+		Added:    result.Added,
+		Updated:  result.Updated,
+		Rejected: result.Rejected,
 	}, nil
 }
 
@@ -162,16 +318,10 @@ type ProvisionResult struct {
 
 // ListDeviceTypes returns registry device types for the provision DTID picker.
 func (a *App) ListDeviceTypes() ([]gateway.DeviceType, error) {
-	a.mu.Lock()
-	token := a.accessToken
-	gatewayURL := a.cfg.GatewayURL
-	a.mu.Unlock()
-	if token == "" {
-		return nil, fmt.Errorf("login required")
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
 	}
-
-	client := gateway.NewClient(gatewayURL)
-	client.AccessToken = token
 	return client.ListDeviceTypes()
 }
 

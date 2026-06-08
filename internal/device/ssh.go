@@ -2,6 +2,7 @@ package device
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -20,9 +21,13 @@ type SSHConfig struct {
 
 // InstallResult reports post-install checks.
 type InstallResult struct {
-	AgentActive  bool   `json:"agent_active"`
-	AgentChecked bool   `json:"agent_checked_out"`
-	Message      string `json:"message"`
+	AgentActive    bool   `json:"agent_active"`
+	AgentChecked   bool   `json:"agent_checked_out"`
+	FFmpegOK       bool   `json:"ffmpeg_ok"`
+	Go2rtcOK       bool   `json:"go2rtc_ok"`
+	MotionOK       bool   `json:"motion_ok"`
+	SetupServerOK  bool   `json:"setup_server_ok"`
+	Message        string `json:"message"`
 }
 
 // InstallCredentials copies device.key and identity.json to the Pi and restarts the agent.
@@ -32,6 +37,12 @@ func InstallCredentials(cfg SSHConfig, privateKeyPEM, identityJSON []byte, agent
 		return nil, err
 	}
 	defer client.Close()
+
+	expectedDeviceID := parseIdentityDeviceID(identityJSON)
+
+	if err := installAgentRuntimeDeps(client, cfg.Password); err != nil {
+		return nil, err
+	}
 
 	agentDeployed := false
 	if agentOpts.Enabled {
@@ -76,22 +87,55 @@ rm -f /tmp/device.key /tmp/identity.json
 	}
 
 	time.Sleep(2 * time.Second)
+	ffmpegOK, go2rtcOK, motionOK := verifyAgentRuntimeDeps(client)
 	active, err := isAgentActive(client)
+	setupOK := waitForSetupServer(cfg.Host, expectedDeviceID, 45*time.Second)
 	if err != nil {
-		return &InstallResult{AgentActive: false, Message: err.Error()}, nil
+		return &InstallResult{
+			AgentActive: false, FFmpegOK: ffmpegOK, Go2rtcOK: go2rtcOK, MotionOK: motionOK,
+			SetupServerOK: setupOK, Message: err.Error(),
+		}, nil
 	}
 
-	msg := "Credentials installed"
+	msg := "Credentials installed — device in setup mode (claim via QR / :4444)"
 	if agentDeployed {
-		msg = "Agent installed from CI build, credentials installed"
+		msg = "Agent installed, credentials deployed — device in setup mode (claim via QR / :4444)"
 	}
-	if !active {
+	if !ffmpegOK || !go2rtcOK || !motionOK {
+		var missing []string
+		if !ffmpegOK {
+			missing = append(missing, "ffmpeg")
+		}
+		if !go2rtcOK {
+			missing = append(missing, "go2rtc")
+		}
+		if !motionOK {
+			missing = append(missing, "motion (venv/model/script)")
+		}
+		msg = fmt.Sprintf("Install finished but missing runtime deps: %s — check apt/network on the Pi", strings.Join(missing, ", "))
+	} else if !active {
 		msg = "Install finished but doorbell-agent is not active — check journalctl on the Pi"
 		if agentDeployed {
 			msg = "Agent installed from CI but service is not active — check journalctl on the Pi"
 		}
+	} else if !setupOK {
+		msg = "Agent is running but setup server (:4444) is not responding — ensure identity.json has claimed:false and agent restarted"
 	}
-	return &InstallResult{AgentActive: active, AgentChecked: agentDeployed, Message: msg}, nil
+	return &InstallResult{
+		AgentActive: active, AgentChecked: agentDeployed,
+		FFmpegOK: ffmpegOK, Go2rtcOK: go2rtcOK, MotionOK: motionOK, SetupServerOK: setupOK,
+		Message: msg,
+	}, nil
+}
+
+func parseIdentityDeviceID(identityJSON []byte) string {
+	var id struct {
+		DeviceID string `json:"device_id"`
+	}
+	if err := json.Unmarshal(identityJSON, &id); err != nil {
+		return ""
+	}
+	return id.DeviceID
 }
 
 func dialSSH(cfg SSHConfig) (*ssh.Client, error) {

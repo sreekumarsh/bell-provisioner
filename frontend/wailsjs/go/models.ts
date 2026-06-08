@@ -14,6 +14,8 @@ export namespace config {
 	    agent_repo_branch: string;
 	    agent_repo_path: string;
 	    agent_artifact_name: string;
+	    access_token?: string;
+	    refresh_token?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -34,6 +36,8 @@ export namespace config {
 	        this.agent_repo_branch = source["agent_repo_branch"];
 	        this.agent_repo_path = source["agent_repo_path"];
 	        this.agent_artifact_name = source["agent_artifact_name"];
+	        this.access_token = source["access_token"];
+	        this.refresh_token = source["refresh_token"];
 	    }
 	}
 
@@ -44,6 +48,10 @@ export namespace device {
 	export class InstallResult {
 	    agent_active: boolean;
 	    agent_checked_out: boolean;
+	    ffmpeg_ok: boolean;
+	    go2rtc_ok: boolean;
+	    motion_ok: boolean;
+	    setup_server_ok: boolean;
 	    message: string;
 	
 	    static createFrom(source: any = {}) {
@@ -54,6 +62,10 @@ export namespace device {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.agent_active = source["agent_active"];
 	        this.agent_checked_out = source["agent_checked_out"];
+	        this.ffmpeg_ok = source["ffmpeg_ok"];
+	        this.go2rtc_ok = source["go2rtc_ok"];
+	        this.motion_ok = source["motion_ok"];
+	        this.setup_server_ok = source["setup_server_ok"];
 	        this.message = source["message"];
 	    }
 	}
@@ -87,8 +99,91 @@ export namespace discover {
 
 }
 
+export namespace gateway {
+	
+	export class Capability {
+	    capid: string;
+	    friendly_name: string;
+	    layer: string;
+	    description?: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Capability(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.capid = source["capid"];
+	        this.friendly_name = source["friendly_name"];
+	        this.layer = source["layer"];
+	        this.description = source["description"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+	export class DeviceFamily {
+	    dfid: string;
+	    friendly_name: string;
+	    description?: string;
+	    device_types?: string[];
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceFamily(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dfid = source["dfid"];
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
+	        this.device_types = source["device_types"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+	export class DeviceType {
+	    dtid: string;
+	    dfid: string;
+	    friendly_name: string;
+	    capabilities?: string[];
+	    description?: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceType(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dtid = source["dtid"];
+	        this.dfid = source["dfid"];
+	        this.friendly_name = source["friendly_name"];
+	        this.capabilities = source["capabilities"];
+	        this.description = source["description"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
+	export class ApplyRegistryResult {
+	    added: string[];
+	    updated: string[];
+	    rejected: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ApplyRegistryResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.added = source["added"];
+	        this.updated = source["updated"];
+	        this.rejected = source["rejected"];
+	    }
+	}
 	export class InstallRequest {
 	    host: string;
 	    ssh_user: string;
@@ -177,6 +272,26 @@ export namespace main {
 	        this.mqtt_password = source["mqtt_password"];
 	    }
 	}
+	export class SessionInfo {
+	    logged_in: boolean;
+	    user_name: string;
+	    phone: string;
+	    role: string;
+	    gateway_url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SessionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.logged_in = source["logged_in"];
+	        this.user_name = source["user_name"];
+	        this.phone = source["phone"];
+	        this.role = source["role"];
+	        this.gateway_url = source["gateway_url"];
+	    }
+	}
 	export class VerifyRequest {
 	    device_id: string;
 	    mqtt_username: string;
@@ -224,29 +339,6 @@ export namespace main {
 		    }
 		    return a;
 		}
-	}
-
-}
-
-export namespace gateway {
-	
-	export class DeviceType {
-	    dtid: string;
-	    dfid: string;
-	    friendly_name: string;
-	    deprecated: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new DeviceType(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.dtid = source["dtid"];
-	        this.dfid = source["dfid"];
-	        this.friendly_name = source["friendly_name"];
-	        this.deprecated = source["deprecated"];
-	    }
 	}
 
 }

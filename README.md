@@ -1,12 +1,20 @@
 # Bell Provisioner
 
-Mac utility for factory/lab device provisioning. Guides operators through:
+Mac utility for factory/lab device provisioning. After **admin login**, the dashboard offers:
 
-1. **Environment** — gateway URL, VPS vs Mac LAN backend, SSH target, GitHub token
-2. **Admin login** — `POST /auth/login` with an account that has `role=admin`
-3. **LAN discovery** — mDNS (`raspberrypi.local`), subnet scan, manual IP
-4. **Cloud provision (v2)** — select **DTID** + factory **device_id**, then `POST /admin/devices/provision`
-5. **Install + verify** — download `doorbell-agent-linux-arm64` CI artifact on the Mac, push to Pi via SSH, install credentials + optional `agent.env`, MQTT smoke test
+- **Device registry** — manage capabilities, families, and device types via gateway `/admin/*` routes
+- **Start provisioning** — guided flow: environment → LAN discovery → cloud provision (v2) → SSH install + MQTT verify
+
+## Flow
+
+1. **Login** — gateway URL + admin credentials (`POST /auth/login`, `role=admin`)
+2. **Dashboard** — choose registry management or start a provisioning run
+3. **Provisioning** (optional wizard):
+   - **Environment** — VPS vs Mac LAN backend, SSH target, GitHub token
+   - **Discover** — mDNS / subnet scan / manual IP
+   - **Provision (v2)** — select **DTID** + factory **device_id**, then `POST /admin/devices/provision`
+   - **Install + verify** — download `doorbell-agent-linux-arm64` CI artifact, push to Pi via SSH, MQTT smoke test
+4. **Registry** (from dashboard) — `GET/POST /admin/capabilities`, `/admin/device-families`, `/admin/device-types`, and `POST /admin/device-registry/apply`
 
 ## Prerequisites
 
@@ -110,7 +118,25 @@ Matches **pi-streamer** workflow `.github/workflows/agent.yml`:
 
 1. On push to `main` (under `agent/**`), CI builds `linux/arm64` `doorbell-agent`, packages `pi-release/` (binary, `doorbell-agent.service`, `VERSION`) into `doorbell-agent-linux-arm64.tar.gz`, and uploads artifact **`doorbell-agent-linux-arm64`**.
 2. **bell-provisioner** (on your Mac) calls the GitHub API with your token, downloads the latest artifact zip, and extracts the binary + systemd unit.
-3. Over SSH, the app uploads files to `/tmp` on the Pi, runs `sudo install` to `/usr/local/bin/doorbell-agent` and `/etc/systemd/system/`, installs **go2rtc** if missing, then deploys `/etc/doorbell/` credentials and restarts the service.
+3. Over SSH, the app uploads files to `/tmp` on the Pi, runs `sudo install` to `/usr/local/bin/doorbell-agent` and `/etc/systemd/system/`, installs **OS runtime dependencies** (see below), then deploys `/etc/doorbell/` credentials and restarts the service.
+
+### OS packages installed on the Pi (Install + verify)
+
+Before the agent restarts, provisioner runs an idempotent apt + binary step over SSH (same sudo password as login). Only missing items are installed:
+
+| Item | Purpose |
+|------|---------|
+| `ffmpeg` | go2rtc exec producer, local NVR recording, motion snapshots |
+| `v4l-utils` | Camera detection (`v4l2-ctl`, agent startup hints) |
+| `curl`, `ca-certificates` | Download go2rtc release binary |
+| `/usr/local/bin/go2rtc` | Streaming (pinned **v1.9.9**, arm64/amd64 from GitHub releases) |
+| `/var/lib/doorbell/venv` | Python venv with `onnxruntime`, `pillow`, `numpy` for motion classification |
+| `/var/lib/doorbell/models/yolov8n.onnx` | YOLOv8n ONNX model (embedded in provisioner, uploaded to Pi) |
+| `/usr/local/bin/motion-classify.py` | Motion inference script (embedded from pi-streamer) |
+
+Provisioner also deploys `agent.env` (when enabled) with `MOTION_*` paths matching the above. After install, it polls `http://<pi>:4444/setup/identity` until the agent setup server responds — the device is ready for QR claim when `claimed:false` in identity.json and setup server is up.
+
+Re-running Install on the same Pi is safe: existing packages and go2rtc are detected and skipped. If apt fails (no network, wrong sudo password), the UI reports the error.
 
 ### GitHub token permissions
 
