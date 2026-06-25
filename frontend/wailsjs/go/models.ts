@@ -16,6 +16,7 @@ export namespace config {
 	    agent_artifact_name: string;
 	    access_token?: string;
 	    refresh_token?: string;
+	    token_expires_at?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new AppConfig(source);
@@ -38,6 +39,7 @@ export namespace config {
 	        this.agent_artifact_name = source["agent_artifact_name"];
 	        this.access_token = source["access_token"];
 	        this.refresh_token = source["refresh_token"];
+	        this.token_expires_at = source["token_expires_at"];
 	    }
 	}
 
@@ -162,6 +164,165 @@ export namespace gateway {
 	        this.description = source["description"];
 	        this.deprecated = source["deprecated"];
 	    }
+	}
+	export class Entitlement {
+	    entitlement_id?: string;
+	    key: string;
+	    friendly_name: string;
+	    description?: string;
+	    scope: string;
+	    value_type: string;
+	    unit?: string;
+	    default_value: string;
+	    category?: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Entitlement(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entitlement_id = source["entitlement_id"];
+	        this.key = source["key"];
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
+	        this.scope = source["scope"];
+	        this.value_type = source["value_type"];
+	        this.unit = source["unit"];
+	        this.default_value = source["default_value"];
+	        this.category = source["category"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+	export class EntitlementPatch {
+	    friendly_name: string;
+	    description?: string;
+	    default_value: string;
+	    category?: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new EntitlementPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
+	        this.default_value = source["default_value"];
+	        this.category = source["category"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+	export class PlanEntitlementRef {
+	    key?: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanEntitlementRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
+	    }
+	}
+	export class Plan {
+	    plan_id?: string;
+	    code: string;
+	    friendly_name: string;
+	    description?: string;
+	    subject_type: string;
+	    price_amount_minor: number;
+	    price_currency: string;
+	    billing_interval: string;
+	    trial_days: number;
+	    status: string;
+	    entitlements?: PlanEntitlementRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Plan(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.plan_id = source["plan_id"];
+	        this.code = source["code"];
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
+	        this.subject_type = source["subject_type"];
+	        this.price_amount_minor = source["price_amount_minor"];
+	        this.price_currency = source["price_currency"];
+	        this.billing_interval = source["billing_interval"];
+	        this.trial_days = source["trial_days"];
+	        this.status = source["status"];
+	        this.entitlements = this.convertValues(source["entitlements"], PlanEntitlementRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class PlanPatch {
+	    friendly_name: string;
+	    description?: string;
+	    price_amount_minor: number;
+	    price_currency: string;
+	    billing_interval: string;
+	    trial_days: number;
+	    status: string;
+	    entitlements: PlanEntitlementRef[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PlanPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
+	        this.price_amount_minor = source["price_amount_minor"];
+	        this.price_currency = source["price_currency"];
+	        this.billing_interval = source["billing_interval"];
+	        this.trial_days = source["trial_days"];
+	        this.status = source["status"];
+	        this.entitlements = this.convertValues(source["entitlements"], PlanEntitlementRef);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

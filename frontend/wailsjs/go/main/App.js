@@ -18,6 +18,14 @@ export function CreateDeviceType(arg1) {
   return window['go']['main']['App']['CreateDeviceType'](arg1);
 }
 
+export function CreateEntitlement(arg1) {
+  return window['go']['main']['App']['CreateEntitlement'](arg1);
+}
+
+export function CreatePlan(arg1) {
+  return window['go']['main']['App']['CreatePlan'](arg1);
+}
+
 export function DiscoverDevices(arg1, arg2) {
   return window['go']['main']['App']['DiscoverDevices'](arg1, arg2);
 }
@@ -46,12 +54,28 @@ export function ListDeviceTypes() {
   return window['go']['main']['App']['ListDeviceTypes']();
 }
 
+export function ListEntitlements() {
+  return window['go']['main']['App']['ListEntitlements']();
+}
+
+export function ListPlans() {
+  return window['go']['main']['App']['ListPlans']();
+}
+
 export function Login(arg1, arg2) {
   return window['go']['main']['App']['Login'](arg1, arg2);
 }
 
 export function Logout() {
   return window['go']['main']['App']['Logout']();
+}
+
+export function PatchEntitlement(arg1, arg2) {
+  return window['go']['main']['App']['PatchEntitlement'](arg1, arg2);
+}
+
+export function PatchPlan(arg1, arg2) {
+  return window['go']['main']['App']['PatchPlan'](arg1, arg2);
 }
 
 export function Provision(arg1) {

@@ -91,6 +91,33 @@ func (c *Client) Login(phone, password string) (*LoginResponse, error) {
 	return &resp, nil
 }
 
+// TokenPair is returned from POST /auth/refresh.
+type TokenPair struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
+// Refresh rotates the access token using a refresh token.
+func (c *Client) Refresh(refreshToken string) (*TokenPair, error) {
+	data, status, err := c.do(http.MethodPost, "/auth/refresh", map[string]string{
+		"refresh_token": refreshToken,
+	}, false)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, parseError(status, data)
+	}
+	var resp TokenPair
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	c.AccessToken = resp.AccessToken
+	c.RefreshToken = resp.RefreshToken
+	return &resp, nil
+}
+
 func parseError(status int, data []byte) error {
 	var errResp struct {
 		Error   string `json:"error"`
@@ -99,7 +126,7 @@ func parseError(status int, data []byte) error {
 	_ = json.Unmarshal(data, &errResp)
 	msg := errResp.Message
 	if msg == "" {
-		msg = strings.TrimSpace(string(data))
+		msg = errResp.Error
 	}
 	if msg == "" {
 		msg = fmt.Sprintf("HTTP %d", status)

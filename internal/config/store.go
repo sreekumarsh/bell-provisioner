@@ -23,6 +23,7 @@ type AppConfig struct {
 	AgentArtifactName string `json:"agent_artifact_name"`
 	AccessToken       string `json:"access_token,omitempty"`
 	RefreshToken      string `json:"refresh_token,omitempty"`
+	TokenExpiresAt    int64  `json:"token_expires_at,omitempty"`
 }
 
 // Default returns sensible defaults for first launch.

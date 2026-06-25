@@ -13,6 +13,12 @@ import {
   CreateDeviceFamily,
   CreateDeviceType,
   ApplyRegistry,
+  ListEntitlements,
+  CreateEntitlement,
+  PatchEntitlement,
+  ListPlans,
+  CreatePlan,
+  PatchPlan,
   Provision,
   Install,
   Verify,
@@ -21,15 +27,33 @@ import {
 import { config } from '../wailsjs/go/models';
 import type { gateway, main } from '../wailsjs/go/models';
 
-type View = 'login' | 'dashboard' | 'provision' | 'registry';
+type View = 'login' | 'dashboard' | 'provision' | 'registry' | 'subscriptions';
 type ProvisionStep = 1 | 2 | 3 | 4;
 type RegistryTab = 'capabilities' | 'families' | 'types';
+type SubscriptionsTab = 'entitlements' | 'plans';
+
+const ENTITLEMENT_CATEGORIES: { value: string; label: string }[] = [
+  { value: '', label: '— none —' },
+  { value: 'recording', label: 'Recording' },
+  { value: 'sharing', label: 'Sharing' },
+  { value: 'ai', label: 'AI' },
+  { value: 'support', label: 'Support' },
+];
+
+const ENTITLEMENT_UNITS: { value: string; label: string }[] = [
+  { value: '', label: '— none —' },
+  { value: 'days', label: 'Days' },
+  { value: 'seconds', label: 'Seconds' },
+  { value: 'count', label: 'Count' },
+  { value: 'kbps', label: 'Kbps' },
+];
 
 const provisionLabels = ['Environment', 'Discover', 'Provision', 'Install'];
 
 let view: View = 'login';
 let provisionStep: ProvisionStep = 1;
 let registryTab: RegistryTab = 'types';
+let subscriptionsTab: SubscriptionsTab = 'entitlements';
 let loginUser: main.LoginResult | null = null;
 let selectedHost = '';
 let provisionResult: main.ProvisionResult | null = null;
@@ -38,6 +62,12 @@ let savedCfg: config.AppConfig | null = null;
 let deviceTypes: gateway.DeviceType[] = [];
 let capabilities: gateway.Capability[] = [];
 let families: gateway.DeviceFamily[] = [];
+let entitlements: gateway.Entitlement[] = [];
+let plans: gateway.Plan[] = [];
+let editingEntitlementId: string | null = null;
+let editingPlanId: string | null = null;
+let planEntitlementDrafts: { key: string; value: string }[] = [{ key: '', value: 'true' }];
+let editPlanEntitlementDrafts: { key: string; value: string }[] = [{ key: '', value: 'true' }];
 
 const state = {
   gatewayURL: 'https://api.vyooham.com',
@@ -106,6 +136,7 @@ function render() {
     </header>
     ${view === 'provision' ? renderProvisionSteps() : ''}
     ${view === 'registry' ? renderRegistryTabs() : ''}
+    ${view === 'subscriptions' ? renderSubscriptionsTabs() : ''}
     <div class="panel">${renderPanel()}</div>
   `;
   bindEvents();
@@ -142,6 +173,16 @@ function renderRegistryTabs(): string {
   ).join('')}</div>`;
 }
 
+function renderSubscriptionsTabs(): string {
+  const tabs: { id: SubscriptionsTab; label: string }[] = [
+    { id: 'entitlements', label: 'Entitlements' },
+    { id: 'plans', label: 'Plans' },
+  ];
+  return `<div class="tabs">${tabs.map(t =>
+    `<button class="tab ${subscriptionsTab === t.id ? 'active' : ''}" data-subtab="${t.id}">${t.label}</button>`
+  ).join('')}</div>`;
+}
+
 function renderPanel(): string {
   switch (view) {
     case 'login': return renderLogin();
@@ -159,6 +200,12 @@ function renderPanel(): string {
         case 'capabilities': return renderRegistryCapabilities();
         case 'families': return renderRegistryFamilies();
         case 'types': return renderRegistryTypes();
+      }
+      break;
+    case 'subscriptions':
+      switch (subscriptionsTab) {
+        case 'entitlements': return renderSubscriptionsEntitlements();
+        case 'plans': return renderSubscriptionsPlans();
       }
   }
   return '';
@@ -199,6 +246,10 @@ function renderDashboard(): string {
       <button class="dashboard-card" id="btnOpenRegistry">
         <strong>Device registry</strong>
         <span>Manage capabilities, families, and device types via admin API.</span>
+      </button>
+      <button class="dashboard-card" id="btnOpenSubscriptions">
+        <strong>Entitlements &amp; plans</strong>
+        <span>Define paid-feature catalog and priced plan bundles (Phase 1).</span>
       </button>
     </div>
     <div id="msg"></div>
@@ -500,6 +551,304 @@ function renderRegistryTypes(): string {
   `;
 }
 
+function renderSubscriptionsEntitlements(): string {
+  const editing = editingEntitlementId
+    ? entitlements.find(e => e.entitlement_id === editingEntitlementId)
+    : undefined;
+
+  const rows = entitlements.length
+    ? entitlements.map(e => `
+      <tr>
+        <td><code>${esc(e.key)}</code></td>
+        <td>${esc(e.friendly_name)}</td>
+        <td>${esc(e.scope)}</td>
+        <td>${esc(e.value_type)}</td>
+        <td>${esc(categoryLabel(e.category || ''))}</td>
+        <td>${e.deprecated ? 'yes' : '—'}</td>
+        <td><button type="button" class="link-btn btnEditEntitlement" data-ent-id="${esc(e.entitlement_id || '')}">Edit</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">No entitlements yet</td></tr>';
+
+  const editSection = editing ? `
+    <h3 class="section-title">Edit entitlement</h3>
+    <p class="hint">Key, scope, value type, and unit cannot be changed after creation.</p>
+    <div class="row">
+      <div class="field"><label>Key</label><input value="${esc(editing.key)}" disabled /></div>
+      <div class="field"><label>Name</label><input id="editEntName" value="${esc(editing.friendly_name)}" /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Scope</label><input value="${esc(editing.scope)}" disabled /></div>
+      <div class="field"><label>Value type</label><input value="${esc(editing.value_type)}" disabled /></div>
+      <div class="field">
+        <label>Category</label>
+        <select id="editEntCategory">${renderCategoryOptions(editing.category || '')}</select>
+      </div>
+    </div>
+    <div class="field"><label>Description</label><input id="editEntDesc" value="${esc(editing.description || '')}" /></div>
+    <div class="row">
+      <div class="field"><label>Default value (JSON)</label><input id="editEntDefault" value="${esc(formatJSONValue(editing.default_value))}" /></div>
+      <div class="field"><label>Unit</label><input value="${esc(unitLabel(editing.unit || ''))}" disabled /></div>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" id="editEntDeprecated" ${editing.deprecated ? 'checked' : ''} /> Deprecated</label>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnSaveEntitlement">Save changes</button>
+      <button class="secondary" id="btnCancelEditEntitlement">Cancel</button>
+    </div>
+  ` : '';
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+      <button class="secondary" id="btnRefreshSubscriptions">Refresh</button>
+    </div>
+    <h2>Entitlements</h2>
+    <p class="hint">Paid-feature catalog (auth-service). Distinct from hardware capabilities in device registry.</p>
+    <table class="registry-table">
+      <thead><tr><th>Key</th><th>Name</th><th>Scope</th><th>Type</th><th>Category</th><th>Deprecated</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${editSection}
+    <h3 class="section-title">Add entitlement</h3>
+    <div class="row">
+      <div class="field"><label>Key</label><input id="newEntKey" placeholder="cloud_recording" /></div>
+      <div class="field"><label>Name</label><input id="newEntName" placeholder="Cloud recording" /></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Scope</label>
+        <select id="newEntScope">
+          <option value="device">device</option>
+          <option value="location">location</option>
+          <option value="account">account</option>
+          <option value="all">all</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Value type</label>
+        <select id="newEntValueType">
+          <option value="boolean">boolean</option>
+          <option value="number">number</option>
+          <option value="enum">enum</option>
+          <option value="string">string</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <select id="newEntCategory">${renderCategoryOptions('recording')}</select>
+      </div>
+    </div>
+    <div class="field"><label>Description</label><input id="newEntDesc" placeholder="Optional" /></div>
+    <div class="row">
+      <div class="field"><label>Default value (JSON)</label><input id="newEntDefault" value="false" placeholder="false" /></div>
+      <div class="field">
+        <label>Unit</label>
+        <select id="newEntUnit">${renderUnitOptions('')}</select>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnCreateEntitlement">Create entitlement</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderSubscriptionsPlans(): string {
+  const editing = editingPlanId
+    ? plans.find(p => p.plan_id === editingPlanId)
+    : undefined;
+
+  const rows = plans.length
+    ? plans.map(p => `
+      <tr>
+        <td><code>${esc(p.code)}</code></td>
+        <td>${esc(p.friendly_name)}</td>
+        <td>${esc(p.subject_type)}</td>
+        <td>${formatPrice(p.price_amount_minor, p.price_currency)}</td>
+        <td>${esc(p.billing_interval)}</td>
+        <td>${esc(p.status)}</td>
+        <td>${formatPlanEntitlements(p.entitlements)}</td>
+        <td><button type="button" class="link-btn btnEditPlan" data-plan-id="${esc(p.plan_id || '')}">Edit</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">No plans yet</td></tr>';
+
+  const editSection = editing ? `
+    <h3 class="section-title">Edit plan</h3>
+    <p class="hint">Code and subject type cannot be changed after creation.</p>
+    <div class="row">
+      <div class="field"><label>Code</label><input value="${esc(editing.code)}" disabled /></div>
+      <div class="field"><label>Name</label><input id="editPlanName" value="${esc(editing.friendly_name)}" /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Subject type</label><input value="${esc(editing.subject_type)}" disabled /></div>
+      <div class="field">
+        <label>Billing interval</label>
+        <select id="editPlanInterval">
+          ${renderBillingIntervalOptions(editing.billing_interval)}
+        </select>
+      </div>
+      <div class="field"><label>Price (minor units)</label><input id="editPlanPrice" type="number" value="${editing.price_amount_minor}" /></div>
+      <div class="field"><label>Currency</label><input id="editPlanCurrency" value="${esc(editing.price_currency)}" /></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Status</label>
+        <select id="editPlanStatus">
+          <option value="active" ${editing.status === 'active' ? 'selected' : ''}>active</option>
+          <option value="inactive" ${editing.status === 'inactive' ? 'selected' : ''}>inactive</option>
+        </select>
+      </div>
+      <div class="field"><label>Trial days</label><input id="editPlanTrialDays" type="number" value="${editing.trial_days ?? 0}" /></div>
+    </div>
+    <div class="field"><label>Description</label><input id="editPlanDesc" value="${esc(editing.description || '')}" /></div>
+    <h4 class="section-title">Entitlements in this plan</h4>
+    <div id="editPlanEntitlementsList">${renderPlanEntitlementRows(editPlanEntitlementDrafts, 'edit')}</div>
+    <div class="actions">
+      <button type="button" class="secondary" id="btnAddEditPlanEnt">Add entitlement</button>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnSavePlan">Save changes</button>
+      <button class="secondary" id="btnCancelEditPlan">Cancel</button>
+    </div>
+  ` : '';
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+      <button class="secondary" id="btnRefreshSubscriptions">Refresh</button>
+    </div>
+    <h2>Plans</h2>
+    <p class="hint">Priced bundles of entitlements. Phase 1 defines catalog only — no runtime assignment yet.</p>
+    <table class="registry-table">
+      <thead><tr><th>Code</th><th>Name</th><th>Subject</th><th>Price</th><th>Interval</th><th>Status</th><th>Entitlements</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${editSection}
+    <h3 class="section-title">Add plan</h3>
+    <div class="row">
+      <div class="field"><label>Code</label><input id="newPlanCode" placeholder="cloud_standard" /></div>
+      <div class="field"><label>Name</label><input id="newPlanName" placeholder="Cloud Standard" /></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Subject type</label>
+        <select id="newPlanSubject">
+          <option value="device">device</option>
+          <option value="location">location</option>
+          <option value="account">account</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Billing interval</label>
+        <select id="newPlanInterval">
+          <option value="month">month</option>
+          <option value="year">year</option>
+          <option value="one_time">one_time</option>
+          <option value="lifetime">lifetime</option>
+        </select>
+      </div>
+      <div class="field"><label>Price (minor units)</label><input id="newPlanPrice" type="number" value="14900" /></div>
+      <div class="field"><label>Currency</label><input id="newPlanCurrency" value="INR" /></div>
+    </div>
+    <div class="field"><label>Description</label><input id="newPlanDesc" placeholder="Optional" /></div>
+    <h4 class="section-title">Entitlements in this plan</h4>
+    <p class="hint">Attach one or more catalog entitlements with a JSON value each (e.g. <code>true</code>, <code>30</code>).</p>
+    <div id="planEntitlementsList">${renderPlanEntitlementRows(planEntitlementDrafts, 'create')}</div>
+    <div class="actions">
+      <button type="button" class="secondary" id="btnAddPlanEnt">Add entitlement</button>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnCreatePlan">Create plan</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
+function formatPrice(minor: number, currency: string): string {
+  if (!minor) return 'Free';
+  const major = (minor / 100).toFixed(2);
+  return `${currency || 'INR'} ${major}`;
+}
+
+function renderEntitlementKeyOptions(selected: string): string {
+  return entitlements.filter(e => !e.deprecated).map(e =>
+    `<option value="${esc(e.key)}" ${e.key === selected ? 'selected' : ''}>${esc(e.friendly_name || e.key)} (${esc(e.value_type)})</option>`
+  ).join('');
+}
+
+function renderBillingIntervalOptions(selected: string): string {
+  const intervals = ['month', 'year', 'one_time', 'lifetime'];
+  return intervals.map(i =>
+    `<option value="${i}" ${i === selected ? 'selected' : ''}>${i}</option>`
+  ).join('');
+}
+
+function renderPlanEntitlementRows(drafts: { key: string; value: string }[], list: 'create' | 'edit'): string {
+  if (drafts.length === 0) {
+    drafts.push({ key: '', value: 'true' });
+  }
+  return drafts.map((row, index) => `
+    <div class="row plan-ent-row" data-list="${list}">
+      <div class="field">
+        <label>Entitlement</label>
+        <select class="planEntKey" data-list="${list}" data-index="${index}">
+          <option value="">— select —</option>
+          ${renderEntitlementKeyOptions(row.key)}
+        </select>
+      </div>
+      <div class="field">
+        <label>Value (JSON)</label>
+        <input class="planEntValue" data-list="${list}" data-index="${index}" value="${esc(row.value)}" placeholder="true, 30, ..." />
+      </div>
+      ${drafts.length > 1
+        ? `<button type="button" class="link-btn btnRemovePlanEnt" data-list="${list}" data-index="${index}">Remove</button>`
+        : ''}
+    </div>`).join('');
+}
+
+function formatPlanEntitlements(refs: gateway.PlanEntitlementRef[] | undefined): string {
+  if (!refs?.length) return '—';
+  return refs.map(e => `<code>${esc(e.key || '')}</code>=<code>${esc(e.value || '')}</code>`).join(' ');
+}
+
+function syncPlanEntitlementDraftsFromDOM(drafts: { key: string; value: string }[], list: 'create' | 'edit') {
+  document.querySelectorAll(`.plan-ent-row[data-list="${list}"]`).forEach((row, index) => {
+    if (!drafts[index]) return;
+    drafts[index].key = (row.querySelector('.planEntKey') as HTMLSelectElement)?.value ?? '';
+    drafts[index].value = (row.querySelector('.planEntValue') as HTMLInputElement)?.value ?? '';
+  });
+}
+
+function collectPlanEntitlements(drafts: { key: string; value: string }[], list: 'create' | 'edit'): gateway.PlanEntitlementRef[] {
+  syncPlanEntitlementDraftsFromDOM(drafts, list);
+  const payload: gateway.PlanEntitlementRef[] = [];
+  for (const row of drafts) {
+    if (!row.key) continue;
+    parseJSONDefault(row.value || 'null');
+    payload.push({ key: row.key, value: row.value });
+  }
+  return payload;
+}
+
+function planEntitlementsFromPlan(plan: gateway.Plan): { key: string; value: string }[] {
+  if (!plan.entitlements?.length) {
+    return [{ key: '', value: 'true' }];
+  }
+  return plan.entitlements.map(e => ({
+    key: e.key || '',
+    value: e.value || 'true',
+  }));
+}
+
+function parseTrialDays(raw: string): number {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('Trial days must be a non-negative whole number');
+  }
+  return parseInt(trimmed, 10);
+}
+
 function bindEvents() {
   document.getElementById('btnLogout')?.addEventListener('click', () => {
     void doLogout();
@@ -520,6 +869,14 @@ function bindEvents() {
     void loadRegistryData();
   });
 
+  document.getElementById('btnOpenSubscriptions')?.addEventListener('click', () => {
+    subscriptionsTab = 'entitlements';
+    editingEntitlementId = null;
+    editingPlanId = null;
+    view = 'subscriptions';
+    void loadSubscriptionsData();
+  });
+
   document.getElementById('btnBackDashboard')?.addEventListener('click', () => {
     view = 'dashboard';
     render();
@@ -527,16 +884,93 @@ function bindEvents() {
 
   document.querySelectorAll('.tab').forEach(el => {
     el.addEventListener('click', () => {
+      const subtab = el.getAttribute('data-subtab') as SubscriptionsTab | null;
+      if (subtab) {
+        subscriptionsTab = subtab;
+        render();
+        return;
+      }
       registryTab = el.getAttribute('data-tab') as RegistryTab;
       render();
     });
   });
 
   document.getElementById('btnRefreshRegistry')?.addEventListener('click', () => void loadRegistryData());
+  document.getElementById('btnRefreshSubscriptions')?.addEventListener('click', () => void loadSubscriptionsData());
 
   document.getElementById('btnCreateCap')?.addEventListener('click', () => void createCapability());
   document.getElementById('btnCreateFamily')?.addEventListener('click', () => void createFamily());
   document.getElementById('btnCreateType')?.addEventListener('click', () => void createDeviceType());
+  document.getElementById('btnCreateEntitlement')?.addEventListener('click', () => void createEntitlement());
+  document.getElementById('btnSaveEntitlement')?.addEventListener('click', () => void saveEntitlement());
+  document.getElementById('btnCancelEditEntitlement')?.addEventListener('click', () => {
+    editingEntitlementId = null;
+    render();
+  });
+  document.querySelectorAll('.btnEditEntitlement').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-ent-id');
+      if (id) {
+        editingEntitlementId = id;
+        render();
+      }
+    });
+  });
+  document.getElementById('btnCreatePlan')?.addEventListener('click', () => void createPlan());
+  document.getElementById('btnSavePlan')?.addEventListener('click', () => void savePlan());
+  document.getElementById('btnCancelEditPlan')?.addEventListener('click', () => {
+    editingPlanId = null;
+    render();
+  });
+  document.querySelectorAll('.btnEditPlan').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-plan-id');
+      if (!id) return;
+      const plan = plans.find(p => p.plan_id === id);
+      if (!plan) return;
+      editingPlanId = id;
+      editPlanEntitlementDrafts = planEntitlementsFromPlan(plan);
+      render();
+    });
+  });
+  document.getElementById('btnAddPlanEnt')?.addEventListener('click', () => {
+    syncPlanEntitlementDraftsFromDOM(planEntitlementDrafts, 'create');
+    planEntitlementDrafts.push({ key: '', value: 'true' });
+    render();
+  });
+  document.getElementById('btnAddEditPlanEnt')?.addEventListener('click', () => {
+    syncPlanEntitlementDraftsFromDOM(editPlanEntitlementDrafts, 'edit');
+    editPlanEntitlementDrafts.push({ key: '', value: 'true' });
+    render();
+  });
+  document.querySelectorAll('.btnRemovePlanEnt').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const list = btn.getAttribute('data-list') as 'create' | 'edit' | null;
+      const index = Number(btn.getAttribute('data-index'));
+      const drafts = list === 'edit' ? editPlanEntitlementDrafts : planEntitlementDrafts;
+      if (!list || Number.isNaN(index)) return;
+      syncPlanEntitlementDraftsFromDOM(drafts, list);
+      drafts.splice(index, 1);
+      if (drafts.length === 0) {
+        drafts.push({ key: '', value: 'true' });
+      }
+      render();
+    });
+  });
+  document.querySelectorAll('.planEntKey').forEach(el => {
+    el.addEventListener('change', (e) => {
+      const list = (e.target as HTMLSelectElement).dataset.list as 'create' | 'edit' | undefined;
+      const index = Number((e.target as HTMLSelectElement).dataset.index);
+      const key = (e.target as HTMLSelectElement).value;
+      const drafts = list === 'edit' ? editPlanEntitlementDrafts : planEntitlementDrafts;
+      if (!list || Number.isNaN(index) || !drafts[index]) return;
+      drafts[index].key = key;
+      const ent = entitlements.find(item => item.key === key);
+      if (ent?.default_value) {
+        drafts[index].value = ent.default_value;
+      }
+    });
+  });
   document.getElementById('btnApplyDryRun')?.addEventListener('click', () => void runApplyRegistry(true));
   document.getElementById('btnApplyRegistry')?.addEventListener('click', () => void runApplyRegistry(false));
 
@@ -622,6 +1056,202 @@ async function saveEnvAndContinue() {
   render();
 }
 
+async function loadSubscriptionsData() {
+  setMsg('Loading entitlements & plans…');
+  let entErr = '';
+  let planErr = '';
+  try {
+    entitlements = (await ListEntitlements()) ?? [];
+  } catch (e) {
+    entitlements = [];
+    entErr = errorMessage(e);
+  }
+  try {
+    plans = (await ListPlans()) ?? [];
+  } catch (e) {
+    plans = [];
+    planErr = errorMessage(e);
+  }
+  if (view === 'subscriptions') render();
+  if (entErr && planErr) {
+    setMsg(formatRegistryError(`Entitlements: ${entErr}; Plans: ${planErr}`), true);
+  } else if (entErr) {
+    setMsg(formatRegistryError(`Entitlements: ${entErr}`), true);
+  } else if (planErr) {
+    setMsg(formatRegistryError(`Plans: ${planErr}`), true);
+  } else {
+    setMsg('');
+  }
+}
+
+function formatJSONValue(v: unknown): string {
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'string') return v;
+  return JSON.stringify(v);
+}
+
+function errorMessage(e: unknown): string {
+  if (e == null) return 'Unknown error';
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string') {
+    return (e as { message: string }).message;
+  }
+  return String(e);
+}
+
+function categoryLabel(value: string): string {
+  if (!value) return '—';
+  const hit = ENTITLEMENT_CATEGORIES.find(c => c.value === value);
+  return hit?.label ?? value;
+}
+
+function renderCategoryOptions(selected: string): string {
+  const known = new Set(ENTITLEMENT_CATEGORIES.map(c => c.value));
+  let html = ENTITLEMENT_CATEGORIES.map(c =>
+    `<option value="${esc(c.value)}" ${c.value === selected ? 'selected' : ''}>${esc(c.label)}</option>`
+  ).join('');
+  if (selected && !known.has(selected)) {
+    html += `<option value="${esc(selected)}" selected>${esc(selected)} (legacy)</option>`;
+  }
+  return html;
+}
+
+function unitLabel(value: string): string {
+  if (!value) return '—';
+  const hit = ENTITLEMENT_UNITS.find(u => u.value === value);
+  return hit?.label ?? value;
+}
+
+function renderUnitOptions(selected: string): string {
+  const known = new Set(ENTITLEMENT_UNITS.map(u => u.value));
+  let html = ENTITLEMENT_UNITS.map(u =>
+    `<option value="${esc(u.value)}" ${u.value === selected ? 'selected' : ''}>${esc(u.label)}</option>`
+  ).join('');
+  if (selected && !known.has(selected)) {
+    html += `<option value="${esc(selected)}" selected>${esc(selected)} (legacy)</option>`;
+  }
+  return html;
+}
+
+function parseJSONDefault(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error('Default value must be valid JSON (e.g. false, 0, "text")');
+  }
+}
+
+function parsePriceMinor(raw: string): number {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('Price must be a non-negative whole number (minor units)');
+  }
+  return parseInt(trimmed, 10);
+}
+
+async function createEntitlement() {
+  setMsg('Creating entitlement…');
+  const defaultRaw = val('newEntDefault') || 'false';
+  try {
+    parseJSONDefault(defaultRaw);
+    await CreateEntitlement({
+      key: val('newEntKey'),
+      friendly_name: val('newEntName'),
+      description: val('newEntDesc'),
+      scope: val('newEntScope') || 'device',
+      value_type: val('newEntValueType') || 'boolean',
+      unit: val('newEntUnit'),
+      default_value: defaultRaw,
+      category: val('newEntCategory'),
+    } as gateway.Entitlement);
+    setMsg('Entitlement created', false);
+    await loadSubscriptionsData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function saveEntitlement() {
+  if (!editingEntitlementId) return;
+  setMsg('Saving entitlement…');
+  const defaultRaw = val('editEntDefault');
+  try {
+    parseJSONDefault(defaultRaw);
+    await PatchEntitlement(editingEntitlementId, {
+      friendly_name: val('editEntName'),
+      description: val('editEntDesc'),
+      default_value: defaultRaw,
+      category: val('editEntCategory'),
+      deprecated: (document.getElementById('editEntDeprecated') as HTMLInputElement)?.checked ?? false,
+    } as gateway.EntitlementPatch);
+    editingEntitlementId = null;
+    setMsg('Entitlement updated', false);
+    await loadSubscriptionsData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function createPlan() {
+  setMsg('Creating plan…');
+  let entitlementsPayload: gateway.PlanEntitlementRef[];
+  try {
+    entitlementsPayload = collectPlanEntitlements(planEntitlementDrafts, 'create');
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+    return;
+  }
+  try {
+    await CreatePlan({
+      code: val('newPlanCode'),
+      friendly_name: val('newPlanName'),
+      description: val('newPlanDesc'),
+      subject_type: val('newPlanSubject') || 'device',
+      price_amount_minor: parsePriceMinor(val('newPlanPrice') || '0'),
+      price_currency: val('newPlanCurrency') || 'INR',
+      billing_interval: val('newPlanInterval') || 'month',
+      trial_days: 0,
+      status: 'active',
+      entitlements: entitlementsPayload,
+    } as gateway.Plan);
+    planEntitlementDrafts = [{ key: '', value: 'true' }];
+    setMsg('Plan created', false);
+    await loadSubscriptionsData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function savePlan() {
+  if (!editingPlanId) return;
+  setMsg('Saving plan…');
+  let entitlementsPayload: gateway.PlanEntitlementRef[];
+  try {
+    entitlementsPayload = collectPlanEntitlements(editPlanEntitlementDrafts, 'edit');
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+    return;
+  }
+  try {
+    await PatchPlan(editingPlanId, {
+      friendly_name: val('editPlanName'),
+      description: val('editPlanDesc'),
+      price_amount_minor: parsePriceMinor(val('editPlanPrice') || '0'),
+      price_currency: val('editPlanCurrency') || 'INR',
+      billing_interval: val('editPlanInterval') || 'month',
+      trial_days: parseTrialDays(val('editPlanTrialDays') || '0'),
+      status: val('editPlanStatus') || 'active',
+      entitlements: entitlementsPayload,
+    } as gateway.PlanPatch);
+    editingPlanId = null;
+    setMsg('Plan updated', false);
+    await loadSubscriptionsData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
 async function loadRegistryData() {
   setMsg('Loading registry…');
   try {
@@ -633,11 +1263,11 @@ async function loadRegistryData() {
     capabilities = caps ?? [];
     families = fams ?? [];
     deviceTypes = types ?? [];
+    if (view === 'registry') render();
     setMsg('');
-    if (view === 'registry') render();
   } catch (e: any) {
-    setMsg(formatRegistryError(e?.message || 'Failed to load registry'), true);
     if (view === 'registry') render();
+    setMsg(formatRegistryError(e?.message || 'Failed to load registry'), true);
   }
 }
 
@@ -733,7 +1363,7 @@ async function loadDeviceTypes() {
 
 function formatRegistryError(message: string): string {
   const lower = message.toLowerCase();
-  if (lower.includes('login required') || lower.includes('missing_token') || lower.includes('invalid or has expired')) {
+  if (lower.includes('login required') || lower.includes('missing_token') || lower.includes('invalid or has expired') || lower.includes('token_expired')) {
     return 'Session expired — use Logout, log in again, then open the provision step';
   }
   if (lower.includes('forbidden') || lower.includes('admin access')) {

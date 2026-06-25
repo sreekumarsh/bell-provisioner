@@ -29,6 +29,7 @@ type App struct {
 	refreshToken string
 	userName     string
 	userRole     string
+	tokenExpiresAt time.Time
 
 	pendingPrivateKey []byte
 	pendingIdentity   []byte
@@ -40,15 +41,20 @@ type App struct {
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	cfg := appcfg.Load()
-	return &App{
+	app := &App{
 		cfg:          cfg,
 		accessToken:  cfg.AccessToken,
 		refreshToken: cfg.RefreshToken,
 	}
+	if cfg.TokenExpiresAt > 0 {
+		app.tokenExpiresAt = time.Unix(cfg.TokenExpiresAt, 0)
+	}
+	return app
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	_ = a.ensureFreshToken()
 }
 
 // GetConfig returns persisted settings.
@@ -93,14 +99,10 @@ func (a *App) Login(phone, password string) (*LoginResult, error) {
 	}
 
 	a.mu.Lock()
-	a.accessToken = resp.AccessToken
-	a.refreshToken = resp.RefreshToken
+	a.persistTokensLocked(resp.AccessToken, resp.RefreshToken, resp.ExpiresIn)
 	a.userName = resp.User.Name
 	a.userRole = resp.User.Role
 	a.cfg.Phone = phone
-	a.cfg.AccessToken = resp.AccessToken
-	a.cfg.RefreshToken = resp.RefreshToken
-	_ = appcfg.Save(a.cfg)
 	a.mu.Unlock()
 
 	return &LoginResult{
@@ -126,7 +128,7 @@ func (a *App) GetSession() SessionInfo {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return SessionInfo{
-		LoggedIn:   a.accessToken != "",
+		LoggedIn:   a.accessToken != "" || a.refreshToken != "",
 		UserName:   a.userName,
 		Phone:      a.cfg.Phone,
 		Role:       a.userRole,
@@ -143,6 +145,8 @@ func (a *App) Logout() {
 	a.userRole = ""
 	a.cfg.AccessToken = ""
 	a.cfg.RefreshToken = ""
+	a.cfg.TokenExpiresAt = 0
+	a.tokenExpiresAt = time.Time{}
 	a.pendingPrivateKey = nil
 	a.pendingIdentity = nil
 	a.pendingDeviceID = ""
@@ -152,7 +156,52 @@ func (a *App) Logout() {
 	a.mu.Unlock()
 }
 
+func (a *App) persistTokensLocked(access, refresh string, expiresIn int64) {
+	a.accessToken = access
+	a.refreshToken = refresh
+	if expiresIn > 0 {
+		a.tokenExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
+		a.cfg.TokenExpiresAt = a.tokenExpiresAt.Unix()
+	}
+	a.cfg.AccessToken = access
+	a.cfg.RefreshToken = refresh
+	_ = appcfg.Save(a.cfg)
+}
+
+// ensureFreshToken refreshes the access token when it is expired or near expiry.
+func (a *App) ensureFreshToken() error {
+	a.mu.Lock()
+	refresh := a.refreshToken
+	gatewayURL := a.cfg.GatewayURL
+	expiresAt := a.tokenExpiresAt
+	a.mu.Unlock()
+
+	if refresh == "" {
+		if expiresAt.IsZero() || time.Now().Before(expiresAt) {
+			return nil
+		}
+		return fmt.Errorf("login required")
+	}
+	if !expiresAt.IsZero() && time.Now().Before(expiresAt.Add(-time.Minute)) {
+		return nil
+	}
+
+	client := gateway.NewClient(gatewayURL)
+	pair, err := client.Refresh(refresh)
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	a.persistTokensLocked(pair.AccessToken, pair.RefreshToken, pair.ExpiresIn)
+	a.mu.Unlock()
+	return nil
+}
+
 func (a *App) adminClient() (*gateway.Client, error) {
+	if err := a.ensureFreshToken(); err != nil {
+		return nil, err
+	}
 	a.mu.Lock()
 	token := a.accessToken
 	gatewayURL := a.cfg.GatewayURL
@@ -261,6 +310,137 @@ func (a *App) ApplyRegistry(dryRun bool) (*ApplyRegistryResult, error) {
 	}, nil
 }
 
+// ListEntitlements returns the entitlement catalog.
+func (a *App) ListEntitlements() ([]gateway.Entitlement, error) {
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListEntitlements()
+}
+
+// CreateEntitlement adds an entitlement via POST /admin/entitlements.
+func (a *App) CreateEntitlement(ent gateway.Entitlement) (*gateway.Entitlement, error) {
+	if strings.TrimSpace(ent.Key) == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+	if strings.TrimSpace(ent.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	switch ent.Scope {
+	case "device", "location", "account", "all":
+	default:
+		return nil, fmt.Errorf("scope must be device, location, account, or all")
+	}
+	switch ent.ValueType {
+	case "boolean", "number", "enum", "string":
+	default:
+		return nil, fmt.Errorf("value_type must be boolean, number, enum, or string")
+	}
+	if !gateway.ValidEntitlementCategory(ent.Category) {
+		return nil, fmt.Errorf("category must be recording, sharing, ai, or support")
+	}
+	if !gateway.ValidEntitlementUnit(ent.Unit) {
+		return nil, fmt.Errorf("unit must be days, seconds, count, or kbps")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.CreateEntitlement(ent)
+}
+
+// PatchEntitlement updates mutable entitlement fields via PATCH /admin/entitlements/{id}.
+func (a *App) PatchEntitlement(entitlementID string, patch gateway.EntitlementPatch) (*gateway.Entitlement, error) {
+	if strings.TrimSpace(entitlementID) == "" {
+		return nil, fmt.Errorf("entitlement_id is required")
+	}
+	if strings.TrimSpace(patch.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	if !gateway.ValidEntitlementCategory(patch.Category) {
+		return nil, fmt.Errorf("category must be recording, sharing, ai, or support")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.PatchEntitlement(entitlementID, patch)
+}
+
+// ListPlans returns plan definitions.
+func (a *App) ListPlans() ([]gateway.Plan, error) {
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.ListPlans()
+}
+
+// CreatePlan adds a plan via POST /admin/plans.
+func (a *App) CreatePlan(plan gateway.Plan) (*gateway.Plan, error) {
+	if strings.TrimSpace(plan.Code) == "" {
+		return nil, fmt.Errorf("code is required")
+	}
+	if strings.TrimSpace(plan.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	switch plan.SubjectType {
+	case "device", "location", "account":
+	default:
+		return nil, fmt.Errorf("subject_type must be device, location, or account")
+	}
+	if err := validatePlanFields(plan.FriendlyName, plan.BillingInterval, plan.Status, plan.PriceCurrency, plan.PriceAmountMinor); err != nil {
+		return nil, err
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.CreatePlan(plan)
+}
+
+func validatePlanFields(friendlyName, billingInterval, status, priceCurrency string, priceAmountMinor int64) error {
+	if strings.TrimSpace(friendlyName) == "" {
+		return fmt.Errorf("friendly_name is required")
+	}
+	switch billingInterval {
+	case "month", "year", "one_time", "lifetime":
+	default:
+		return fmt.Errorf("billing_interval must be month, year, one_time, or lifetime")
+	}
+	if status == "" {
+		return fmt.Errorf("status is required")
+	}
+	switch status {
+	case "active", "inactive":
+	default:
+		return fmt.Errorf("status must be active or inactive")
+	}
+	if priceAmountMinor < 0 {
+		return fmt.Errorf("price_amount_minor must be non-negative")
+	}
+	if strings.TrimSpace(priceCurrency) == "" {
+		return fmt.Errorf("price_currency is required")
+	}
+	return nil
+}
+
+// PatchPlan updates mutable plan fields via PATCH /admin/plans/{id}.
+func (a *App) PatchPlan(planID string, patch gateway.PlanPatch) (*gateway.Plan, error) {
+	if strings.TrimSpace(planID) == "" {
+		return nil, fmt.Errorf("plan_id is required")
+	}
+	if err := validatePlanFields(patch.FriendlyName, patch.BillingInterval, patch.Status, patch.PriceCurrency, patch.PriceAmountMinor); err != nil {
+		return nil, err
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.PatchPlan(planID, patch)
+}
+
 // DiscoverDevices probes Pi hosts. fullLAN=true scans the subnet (slow); false only checks configured hosts.
 func (a *App) DiscoverDevices(manualHost string, fullLAN bool) []discover.Candidate {
 	a.mu.Lock()
@@ -346,8 +526,13 @@ func (a *App) Provision(req ProvisionRequest) (*ProvisionResult, error) {
 	}
 
 	a.mu.Lock()
-	token := a.accessToken
 	gatewayURL := a.cfg.GatewayURL
+	a.mu.Unlock()
+	if err := a.ensureFreshToken(); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	token := a.accessToken
 	a.mu.Unlock()
 	if token == "" {
 		return nil, fmt.Errorf("login required")

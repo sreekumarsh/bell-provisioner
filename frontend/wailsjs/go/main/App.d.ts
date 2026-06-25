@@ -14,6 +14,10 @@ export function CreateDeviceFamily(arg1:gateway.DeviceFamily):Promise<gateway.De
 
 export function CreateDeviceType(arg1:gateway.DeviceType):Promise<gateway.DeviceType>;
 
+export function CreateEntitlement(arg1:gateway.Entitlement):Promise<gateway.Entitlement>;
+
+export function CreatePlan(arg1:gateway.Plan):Promise<gateway.Plan>;
+
 export function DiscoverDevices(arg1:string,arg2:boolean):Promise<Array<discover.Candidate>>;
 
 export function GetConfig():Promise<config.AppConfig>;
@@ -28,9 +32,17 @@ export function ListDeviceFamilies():Promise<Array<gateway.DeviceFamily>>;
 
 export function ListDeviceTypes():Promise<Array<gateway.DeviceType>>;
 
+export function ListEntitlements():Promise<Array<gateway.Entitlement>>;
+
+export function ListPlans():Promise<Array<gateway.Plan>>;
+
 export function Login(arg1:string,arg2:string):Promise<main.LoginResult>;
 
 export function Logout():Promise<void>;
+
+export function PatchEntitlement(arg1:string,arg2:gateway.EntitlementPatch):Promise<gateway.Entitlement>;
+
+export function PatchPlan(arg1:string,arg2:gateway.PlanPatch):Promise<gateway.Plan>;
 
 export function Provision(arg1:main.ProvisionRequest):Promise<main.ProvisionResult>;
 
