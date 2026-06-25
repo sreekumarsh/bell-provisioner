@@ -25,7 +25,7 @@ func TestAgentRuntimeDepsInstallScript_idempotentChecks(t *testing.T) {
 		"/var/lib/doorbell/venv",
 		"onnxruntime pillow numpy",
 		"GO2RTC_VERSION",
-		"1.9.9",
+		"releases/latest/download",
 		"go2rtc_linux_arm64",
 	}
 	for _, want := range required {

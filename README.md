@@ -129,7 +129,7 @@ Before the agent restarts, provisioner runs an idempotent apt + binary step over
 | `ffmpeg` | go2rtc exec producer, local NVR recording, motion snapshots |
 | `v4l-utils` | Camera detection (`v4l2-ctl`, agent startup hints) |
 | `curl`, `ca-certificates` | Download go2rtc release binary |
-| `/usr/local/bin/go2rtc` | Streaming (pinned **v1.9.9**, arm64/amd64 from GitHub releases) |
+| `/usr/local/bin/go2rtc` | Streaming (latest GitHub release, arm64/amd64; override with `GO2RTC_VERSION` on Pi) |
 | `/var/lib/doorbell/venv` | Python venv with `onnxruntime`, `pillow`, `numpy` for motion classification |
 | `/var/lib/doorbell/models/yolov8n.onnx` | YOLOv8n ONNX model (embedded in provisioner, uploaded to Pi) |
 | `/usr/local/bin/motion-classify.py` | Motion inference script (embedded from pi-streamer) |

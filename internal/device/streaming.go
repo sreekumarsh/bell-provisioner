@@ -46,9 +46,13 @@ if [ ! -x /usr/local/bin/go2rtc ]; then
       exit 1
       ;;
   esac
-  GO2RTC_VERSION="${GO2RTC_VERSION:-1.9.9}"
-  URL="https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/${GO2RTC_ASSET}"
-  echo "==> Installing go2rtc ${GO2RTC_VERSION} (${GO2RTC_ASSET})"
+  if [ -n "${GO2RTC_VERSION:-}" ]; then
+    URL="https://github.com/AlexxIT/go2rtc/releases/download/v${GO2RTC_VERSION}/${GO2RTC_ASSET}"
+    echo "==> Installing go2rtc ${GO2RTC_VERSION} (${GO2RTC_ASSET})"
+  else
+    URL="https://github.com/AlexxIT/go2rtc/releases/latest/download/${GO2RTC_ASSET}"
+    echo "==> Installing go2rtc latest (${GO2RTC_ASSET})"
+  fi
   curl -fsSL "$URL" -o /tmp/go2rtc
   sudo install -m 755 /tmp/go2rtc /usr/local/bin/go2rtc
   rm -f /tmp/go2rtc
