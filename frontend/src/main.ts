@@ -96,7 +96,7 @@ async function init() {
     savedCfg = cfg;
     state.gatewayURL = cfg.gateway_url || state.gatewayURL;
     state.backendProfile = cfg.backend_profile || 'vps';
-    state.sshUser = (cfg.ssh_user || state.sshUser || 'sreekumar').toLowerCase();
+    state.sshUser = (cfg.ssh_user || state.sshUser || 'pi').toLowerCase();
     state.sshHost = cfg.ssh_host || 'raspberrypi.local';
     state.sshPort = cfg.ssh_port || 22;
     state.macIP = cfg.mac_ip || '';
@@ -276,7 +276,7 @@ function renderEnv(): string {
     <div class="row">
       <div class="field">
         <label>SSH user (Pi Linux account)</label>
-        <input id="sshUser" value="${esc(state.sshUser)}" placeholder="sreekumar" />
+        <input id="sshUser" value="${esc(state.sshUser)}" placeholder="pi" />
       </div>
       <div class="field">
         <label>SSH host</label>

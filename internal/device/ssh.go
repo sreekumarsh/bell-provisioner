@@ -166,8 +166,11 @@ func dialSSH(cfg SSHConfig) (*ssh.Client, error) {
 	}
 	client, err := ssh.Dial("tcp", addr, clientConfig)
 	if err != nil {
+		if strings.Contains(err.Error(), "no supported methods remain") {
+			return nil, fmt.Errorf("%w — Pi SSH accepts public keys only; enable password auth on the Pi (sshd PasswordAuthentication yes, then sudo systemctl restart ssh). Bell Provisioner uses password auth, not your Mac SSH keys", err)
+		}
 		if strings.Contains(err.Error(), "unable to authenticate") {
-			return nil, fmt.Errorf("%w — wrong Pi SSH user or password (user %q must be the Pi account, e.g. pi — not your Mac login)", err, cfg.User)
+			return nil, fmt.Errorf("%w — check Pi SSH user %q and password (Environment step)", err, cfg.User)
 		}
 		return nil, err
 	}
