@@ -2,7 +2,6 @@ package device
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -11,7 +10,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// SSHConfig holds connection parameters for the Pi (password auth only).
+// SSHConfig holds connection parameters for the device (password auth only).
 type SSHConfig struct {
 	Host     string
 	Port     int
@@ -21,6 +20,7 @@ type SSHConfig struct {
 
 // InstallResult reports post-install checks.
 type InstallResult struct {
+	Profile        string `json:"profile"`
 	AgentActive    bool   `json:"agent_active"`
 	AgentChecked   bool   `json:"agent_checked_out"`
 	FFmpegOK       bool   `json:"ffmpeg_ok"`
@@ -30,29 +30,45 @@ type InstallResult struct {
 	Message        string `json:"message"`
 }
 
-// InstallCredentials copies device.key and identity.json to the Pi and restarts the agent.
-func InstallCredentials(cfg SSHConfig, privateKeyPEM, identityJSON []byte, agentEnvContent string, deployAgentEnv bool, agentOpts AgentInstallOptions) (*InstallResult, error) {
+// InstallCredentials copies device.key, identity.json, and optional mTLS certs
+// to the device etc dir for the given profile and restarts the agent.
+func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, identityJSON, deviceCertPEM, caCertPEM []byte, agentEnvContent string, deployAgentEnv bool, agentOpts AgentInstallOptions) (*InstallResult, error) {
+	spec := profile.Spec()
 	client, err := dialSSH(cfg)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
 
-	expectedDeviceID := parseIdentityDeviceID(identityJSON)
-
-	if err := installAgentRuntimeDeps(client, cfg.Password); err != nil {
+	id, err := ParseIdentity(identityJSON)
+	if err != nil {
 		return nil, err
+	}
+	expectedDeviceID := id.DeviceID
+
+	if spec.CameraDeps {
+		if err := installDoorbellRuntimeDeps(client, cfg.Password); err != nil {
+			return nil, err
+		}
 	}
 
 	agentDeployed := false
 	if agentOpts.Enabled {
-		if err := DeployAgentBundle(client, cfg.Password, agentOpts.Bundle); err != nil {
+		opts := agentOpts
+		if opts.BinaryName == "" {
+			opts.BinaryName = spec.BinaryName
+		}
+		if opts.ServiceName == "" {
+			opts.ServiceName = spec.ServiceName
+		}
+		if err := DeployAgentBundle(client, cfg.Password, opts); err != nil {
 			return nil, fmt.Errorf("deploy agent: %w", err)
 		}
 		agentDeployed = true
 	}
 
-	if err := runSudo(client, cfg.Password, "sudo mkdir -p /etc/doorbell"); err != nil {
+	etcDir := spec.EtcDir
+	if err := runSudo(client, cfg.Password, "sudo mkdir -p "+shellSingleQuote(etcDir)); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 
@@ -63,45 +79,81 @@ func InstallCredentials(cfg SSHConfig, privateKeyPEM, identityJSON []byte, agent
 		return nil, fmt.Errorf("upload identity.json: %w", err)
 	}
 
-	installScript := `
-sudo mkdir -p /etc/doorbell
-sudo install -m 600 -o root -g root /tmp/device.key /etc/doorbell/device.key &&
-sudo install -m 644 -o root -g root /tmp/identity.json /etc/doorbell/identity.json &&
+	installScript := fmt.Sprintf(`
+sudo mkdir -p %s
+sudo install -m 600 -o root -g root /tmp/device.key %s/device.key &&
+sudo install -m 644 -o root -g root /tmp/identity.json %s/identity.json &&
 rm -f /tmp/device.key /tmp/identity.json
-`
+`, shellSingleQuote(etcDir), shellSingleQuote(etcDir), shellSingleQuote(etcDir))
+	if len(deviceCertPEM) > 0 {
+		if err := uploadFile(client, "/tmp/device.crt", deviceCertPEM, 0644); err != nil {
+			return nil, fmt.Errorf("upload device.crt: %w", err)
+		}
+		installScript += fmt.Sprintf(`
+sudo install -m 644 -o root -g root /tmp/device.crt %s/device.crt &&
+rm -f /tmp/device.crt
+`, shellSingleQuote(etcDir))
+	}
+	if len(caCertPEM) > 0 {
+		if err := uploadFile(client, "/tmp/ca.crt", caCertPEM, 0644); err != nil {
+			return nil, fmt.Errorf("upload ca.crt: %w", err)
+		}
+		installScript += fmt.Sprintf(`
+sudo install -m 644 -o root -g root /tmp/ca.crt %s/ca.crt &&
+rm -f /tmp/ca.crt
+`, shellSingleQuote(etcDir))
+	}
+
 	if err := runSudo(client, cfg.Password, installScript); err != nil {
 		return nil, fmt.Errorf("install files: %w", err)
 	}
 
 	if deployAgentEnv && agentEnvContent != "" {
+		envRemote := etcDir + "/" + spec.EnvFileName
 		if err := uploadFile(client, "/tmp/agent.env", []byte(agentEnvContent), 0644); err != nil {
 			return nil, fmt.Errorf("upload agent.env: %w", err)
 		}
-		if err := runSudo(client, cfg.Password, "sudo install -m 644 -o root -g root /tmp/agent.env /etc/doorbell/agent.env && rm -f /tmp/agent.env"); err != nil {
+		if err := runSudo(client, cfg.Password, fmt.Sprintf(
+			"sudo install -m 644 -o root -g root /tmp/agent.env %s && rm -f /tmp/agent.env",
+			shellSingleQuote(envRemote),
+		)); err != nil {
 			return nil, fmt.Errorf("install agent.env: %w", err)
 		}
 	}
 
-	if err := runSudo(client, cfg.Password, "sudo systemctl daemon-reload && (sudo systemctl restart doorbell-agent || sudo systemctl restart doorbell-agent.service)"); err != nil {
+	svc := spec.ServiceName
+	restartCmd := fmt.Sprintf(
+		"sudo systemctl daemon-reload && (sudo systemctl restart %s || sudo systemctl restart %s.service)",
+		svc, svc,
+	)
+	if err := runSudo(client, cfg.Password, restartCmd); err != nil {
 		return nil, fmt.Errorf("restart agent: %w", err)
 	}
 
 	time.Sleep(2 * time.Second)
-	ffmpegOK, go2rtcOK, motionOK := verifyAgentRuntimeDeps(client)
-	active, err := isAgentActive(client)
+
+	var ffmpegOK, go2rtcOK, motionOK bool
+	if spec.CameraDeps {
+		ffmpegOK, go2rtcOK, motionOK = verifyDoorbellRuntimeDeps(client)
+	} else {
+		ffmpegOK, go2rtcOK, motionOK = true, true, true
+	}
+
+	active, err := isServiceActive(client, svc)
 	setupOK := waitForSetupServer(cfg.Host, expectedDeviceID, 45*time.Second)
 	if err != nil {
 		return &InstallResult{
-			AgentActive: false, FFmpegOK: ffmpegOK, Go2rtcOK: go2rtcOK, MotionOK: motionOK,
+			Profile: string(profile), AgentActive: false,
+			FFmpegOK: ffmpegOK, Go2rtcOK: go2rtcOK, MotionOK: motionOK,
 			SetupServerOK: setupOK, Message: err.Error(),
 		}, nil
 	}
 
-	msg := "Credentials installed — device in setup mode (claim via QR / :4444)"
+	msg := fmt.Sprintf("Credentials installed to %s — device in setup mode (claim via QR / :4444)", etcDir)
 	if agentDeployed {
-		msg = "Agent installed, credentials deployed — device in setup mode (claim via QR / :4444)"
+		msg = fmt.Sprintf("%s installed, credentials in %s — device in setup mode (claim via QR / :4444)", spec.BinaryName, etcDir)
 	}
-	if !ffmpegOK || !go2rtcOK || !motionOK {
+	if spec.CameraDeps && (!ffmpegOK || !go2rtcOK || !motionOK) {
 		var missing []string
 		if !ffmpegOK {
 			missing = append(missing, "ffmpeg")
@@ -112,30 +164,20 @@ rm -f /tmp/device.key /tmp/identity.json
 		if !motionOK {
 			missing = append(missing, "motion (venv/model/script)")
 		}
-		msg = fmt.Sprintf("Install finished but missing runtime deps: %s — check apt/network on the Pi", strings.Join(missing, ", "))
+		msg = fmt.Sprintf("Install finished but missing runtime deps: %s — check apt/network on the device", strings.Join(missing, ", "))
 	} else if !active {
-		msg = "Install finished but doorbell-agent is not active — check journalctl on the Pi"
+		msg = fmt.Sprintf("Install finished but %s is not active — check journalctl on the device", svc)
 		if agentDeployed {
-			msg = "Agent installed from CI but service is not active — check journalctl on the Pi"
+			msg = fmt.Sprintf("%s installed but service is not active — check journalctl on the device", spec.BinaryName)
 		}
 	} else if !setupOK {
-		msg = "Agent is running but setup server (:4444) is not responding — ensure identity.json has claimed:false and agent restarted"
+		msg = fmt.Sprintf("%s is running but setup server (:4444) is not responding — ensure identity.json has claimed:false and agent restarted", svc)
 	}
 	return &InstallResult{
-		AgentActive: active, AgentChecked: agentDeployed,
+		Profile: string(profile), AgentActive: active, AgentChecked: agentDeployed,
 		FFmpegOK: ffmpegOK, Go2rtcOK: go2rtcOK, MotionOK: motionOK, SetupServerOK: setupOK,
 		Message: msg,
 	}, nil
-}
-
-func parseIdentityDeviceID(identityJSON []byte) string {
-	var id struct {
-		DeviceID string `json:"device_id"`
-	}
-	if err := json.Unmarshal(identityJSON, &id); err != nil {
-		return ""
-	}
-	return id.DeviceID
 }
 
 func dialSSH(cfg SSHConfig) (*ssh.Client, error) {
@@ -156,7 +198,7 @@ func dialSSH(cfg SSHConfig) (*ssh.Client, error) {
 	clientConfig := &ssh.ClientConfig{
 		User:            cfg.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // dev/lab Pi on LAN
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // lab device on LAN
 		Timeout:         15 * time.Second,
 	}
 
@@ -167,10 +209,10 @@ func dialSSH(cfg SSHConfig) (*ssh.Client, error) {
 	client, err := ssh.Dial("tcp", addr, clientConfig)
 	if err != nil {
 		if strings.Contains(err.Error(), "no supported methods remain") {
-			return nil, fmt.Errorf("%w — Pi SSH accepts public keys only; enable password auth on the Pi (sshd PasswordAuthentication yes, then sudo systemctl restart ssh). Bell Provisioner uses password auth, not your Mac SSH keys", err)
+			return nil, fmt.Errorf("%w — SSH accepts public keys only; enable password auth (sshd PasswordAuthentication yes, then sudo systemctl restart ssh). Bell Provisioner uses password auth, not your Mac SSH keys", err)
 		}
 		if strings.Contains(err.Error(), "unable to authenticate") {
-			return nil, fmt.Errorf("%w — check Pi SSH user %q and password (Environment step)", err, cfg.User)
+			return nil, fmt.Errorf("%w — check SSH user %q and password (Environment step)", err, cfg.User)
 		}
 		return nil, err
 	}
@@ -185,13 +227,13 @@ func tcpReachable(addr string, timeout time.Duration) error {
 	}
 	if strings.Contains(err.Error(), "no route to host") {
 		host, _, _ := net.SplitHostPort(addr)
-		return fmt.Errorf("cannot reach %s — Mac and Pi must be on the same LAN (check Pi IP, Wi‑Fi, and VPN). From Terminal: ping %s", addr, host)
+		return fmt.Errorf("cannot reach %s — Mac and device must be on the same LAN (check IP, Wi‑Fi, and VPN). From Terminal: ping %s", addr, host)
 	}
 	if strings.Contains(err.Error(), "connection refused") {
-		return fmt.Errorf("SSH port closed on %s — enable SSH on the Pi (raspi-config or sudo systemctl start ssh)", addr)
+		return fmt.Errorf("SSH port closed on %s — enable SSH on the device", addr)
 	}
 	if strings.Contains(err.Error(), "i/o timeout") || strings.Contains(err.Error(), "timeout") {
-		return fmt.Errorf("timed out reaching %s — verify IP, same subnet, and that the Pi is powered on", addr)
+		return fmt.Errorf("timed out reaching %s — verify IP, same subnet, and that the device is powered on", addr)
 	}
 	return fmt.Errorf("network error reaching %s: %w", addr, err)
 }
@@ -251,14 +293,16 @@ func uploadFile(client *ssh.Client, remotePath string, content []byte, mode uint
 	return nil
 }
 
-func isAgentActive(client *ssh.Client) (bool, error) {
+func isServiceActive(client *ssh.Client, serviceName string) (bool, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return false, err
 	}
 	defer session.Close()
 
-	out, err := session.Output("systemctl is-active doorbell-agent 2>/dev/null || systemctl is-active doorbell-agent.service 2>/dev/null")
+	cmd := fmt.Sprintf("systemctl is-active %s 2>/dev/null || systemctl is-active %s.service 2>/dev/null",
+		shellSingleQuote(serviceName), shellSingleQuote(serviceName))
+	out, err := session.Output(cmd)
 	if err != nil {
 		return false, nil
 	}

@@ -21,9 +21,11 @@ type AppConfig struct {
 	AgentRepoBranch   string `json:"agent_repo_branch"`
 	AgentRepoPath     string `json:"agent_repo_path"`
 	AgentArtifactName string `json:"agent_artifact_name"`
-	AccessToken       string `json:"access_token,omitempty"`
-	RefreshToken      string `json:"refresh_token,omitempty"`
-	TokenExpiresAt    int64  `json:"token_expires_at,omitempty"`
+	NvrAgentRepoURL    string `json:"nvr_agent_repo_url"`
+	NvrAgentRepoBranch string `json:"nvr_agent_repo_branch"`
+	AccessToken        string `json:"access_token,omitempty"`
+	RefreshToken       string `json:"refresh_token,omitempty"`
+	TokenExpiresAt     int64  `json:"token_expires_at,omitempty"`
 }
 
 // Default returns sensible defaults for first launch.
@@ -83,6 +85,12 @@ func Load() AppConfig {
 	}
 	if cfg.AgentArtifactName == "" {
 		cfg.AgentArtifactName = DefaultAgentArtifactName
+	}
+	if cfg.NvrAgentRepoURL == "" {
+		cfg.NvrAgentRepoURL = DefaultNvrAgentRepoURL
+	}
+	if cfg.NvrAgentRepoBranch == "" {
+		cfg.NvrAgentRepoBranch = DefaultNvrAgentRepoBranch
 	}
 	return cfg
 }

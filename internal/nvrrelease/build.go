@@ -1,0 +1,193 @@
+package nvrrelease
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+const (
+	githubAPI          = "https://api.github.com"
+	controlAgentRelDir = "services/control-agent"
+	controlAgentPkg    = "./cmd/control-agent"
+	defaultRef         = "main"
+)
+
+// Bundle is a linux/amd64 control-agent build plus systemd unit.
+type Bundle struct {
+	Version     string
+	Binary      []byte
+	ServiceUnit []byte
+}
+
+// BuildLatestDefaultTimeout downloads the repo and cross-compiles control-agent.
+func BuildLatestDefaultTimeout(owner, repo, token, ref string) (*Bundle, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	return BuildLatest(ctx, owner, repo, token, ref)
+}
+
+// BuildLatest fetches owner/repo at ref and builds linux/amd64 control-agent.
+func BuildLatest(ctx context.Context, owner, repo, token, ref string) (*Bundle, error) {
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repo) == "" {
+		return nil, fmt.Errorf("github owner and repo are required")
+	}
+	if strings.TrimSpace(ref) == "" {
+		ref = defaultRef
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		return nil, fmt.Errorf("go toolchain required on Mac to build control-agent: %w", err)
+	}
+
+	tmpRoot, err := os.MkdirTemp("", "bell-nvr-build-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpRoot)
+
+	tarball, err := downloadRepoTarball(ctx, owner, repo, token, ref)
+	if err != nil {
+		return nil, err
+	}
+	extractDir := filepath.Join(tmpRoot, "src")
+	if err := os.MkdirAll(extractDir, 0755); err != nil {
+		return nil, err
+	}
+	topDir, err := extractTarGz(tarball, extractDir)
+	if err != nil {
+		return nil, err
+	}
+	moduleDir := filepath.Join(extractDir, topDir, controlAgentRelDir)
+	if _, err := os.Stat(filepath.Join(moduleDir, "go.mod")); err != nil {
+		return nil, fmt.Errorf("control-agent module not found at %s: %w", moduleDir, err)
+	}
+
+	outBin := filepath.Join(tmpRoot, "control-agent")
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", outBin, controlAgentPkg)
+	cmd.Dir = moduleDir
+	cmd.Env = append(os.Environ(),
+		"CGO_ENABLED=0",
+		"GOOS=linux",
+		"GOARCH=amd64",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("go build control-agent: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	binary, err := os.ReadFile(outBin)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Bundle{
+		Version:     ref,
+		Binary:      binary,
+		ServiceUnit: []byte(ControlAgentServiceUnit),
+	}, nil
+}
+
+func downloadRepoTarball(ctx context.Context, owner, repo, token, ref string) ([]byte, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/tarball/%s", githubAPI, owner, repo, ref)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("download %s/%s@%s: %s: %s", owner, repo, ref, resp.Status, strings.TrimSpace(string(body)))
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func extractTarGz(data []byte, dest string) (topDir string, err error) {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("gzip: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		name := hdr.Name
+		if name == "" || strings.Contains(name, "..") {
+			continue
+		}
+		if topDir == "" {
+			parts := strings.SplitN(name, "/", 2)
+			topDir = parts[0]
+		}
+		target := filepath.Join(dest, name)
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return "", err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return "", err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0777)
+			if err != nil {
+				return "", err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return "", err
+			}
+			f.Close()
+		}
+	}
+	if topDir == "" {
+		return "", fmt.Errorf("empty tarball")
+	}
+	return topDir, nil
+}
+
+// ControlAgentServiceUnit is the systemd unit deployed with control-agent.
+const ControlAgentServiceUnit = `[Unit]
+Description=Vyooham NVR Control Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/control-agent
+Restart=always
+RestartSec=5
+User=root
+EnvironmentFile=-/etc/vyooham/agent.env
+StandardOutput=journal
+StandardError=journal
+StartLimitBurst=5
+StartLimitIntervalSec=30
+
+[Install]
+WantedBy=multi-user.target
+`

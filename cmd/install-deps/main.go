@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,17 @@ type appConfig struct {
 }
 
 func main() {
+	profileFlag := flag.String("profile", "doorbell", "install profile: doorbell | nvr")
+	flag.Parse()
+
+	profile := device.InstallProfile(*profileFlag)
+	switch profile {
+	case device.ProfileDoorbell, device.ProfileNVR:
+	default:
+		fmt.Fprintf(os.Stderr, "unknown --profile %q (use doorbell or nvr)\n", *profileFlag)
+		os.Exit(2)
+	}
+
 	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -31,18 +43,23 @@ func main() {
 		port = 22
 	}
 
-	fmt.Printf("Installing runtime deps on %s@%s:%d …\n", user, host, port)
+	fmt.Printf("Installing %s runtime deps on %s@%s:%d …\n", profile, user, host, port)
 	if err := device.InstallRuntimeDeps(device.SSHConfig{
 		Host:     host,
 		Port:     port,
 		User:     user,
 		Password: pass,
-	}); err != nil {
+	}, profile); err != nil {
 		fmt.Fprintln(os.Stderr, "install failed:", err)
 		os.Exit(1)
 	}
-	fmt.Println("All runtime dependencies installed and verified.")
-	fmt.Println("  ffmpeg, v4l-utils, go2rtc, motion venv, yolov8n.onnx, motion-classify.py")
+	switch profile {
+	case device.ProfileNVR:
+		fmt.Println("NVR profile: no camera OS packages required for control-agent.")
+	default:
+		fmt.Println("All doorbell runtime dependencies installed and verified.")
+		fmt.Println("  ffmpeg, v4l-utils, go2rtc, motion venv, yolov8n.onnx, motion-classify.py")
+	}
 }
 
 func loadConfig() (appConfig, error) {

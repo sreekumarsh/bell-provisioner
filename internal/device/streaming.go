@@ -14,9 +14,9 @@ const (
 	motionModelTmpPath      = "/tmp/yolov8n.onnx"
 )
 
-// AgentRuntimeDepsInstallScript returns the bash script that installs ffmpeg, v4l-utils,
-// curl/ca-certificates, go2rtc, and the Python motion venv. Idempotent.
-func AgentRuntimeDepsInstallScript() string {
+// DoorbellRuntimeDepsInstallScript returns the bash script that installs ffmpeg, v4l-utils,
+// curl/ca-certificates, go2rtc, and the Python motion venv. Idempotent. Doorbell profile only.
+func DoorbellRuntimeDepsInstallScript() string {
 	return strings.TrimSpace(`
 APT_PACKAGES=""
 command -v ffmpeg >/dev/null 2>&1 || APT_PACKAGES="$APT_PACKAGES ffmpeg"
@@ -69,8 +69,13 @@ echo "==> Agent runtime dependencies OK"
 `)
 }
 
-func installAgentRuntimeDeps(client *ssh.Client, sudoPassword string) error {
-	if err := runSudo(client, sudoPassword, AgentRuntimeDepsInstallScript()); err != nil {
+// AgentRuntimeDepsInstallScript is an alias for DoorbellRuntimeDepsInstallScript (tests/CLI).
+func AgentRuntimeDepsInstallScript() string {
+	return DoorbellRuntimeDepsInstallScript()
+}
+
+func installDoorbellRuntimeDeps(client *ssh.Client, sudoPassword string) error {
+	if err := runSudo(client, sudoPassword, DoorbellRuntimeDepsInstallScript()); err != nil {
 		return fmt.Errorf("apt/ffmpeg/go2rtc/motion venv install failed (check Pi network and sudo password): %w", err)
 	}
 	if err := installMotionAssets(client, sudoPassword); err != nil {
@@ -115,7 +120,7 @@ rm -f %s %s
 	return nil
 }
 
-func verifyAgentRuntimeDeps(client *ssh.Client) (ffmpegOK, go2rtcOK, motionOK bool) {
+func verifyDoorbellRuntimeDeps(client *ssh.Client) (ffmpegOK, go2rtcOK, motionOK bool) {
 	ffmpegOK = runCmd(client, "command -v ffmpeg >/dev/null 2>&1") == nil
 	go2rtcOK = runCmd(client, "/usr/local/bin/go2rtc -version >/dev/null 2>&1") == nil
 	motionOK = runCmd(client, "test -f /var/lib/doorbell/models/yolov8n.onnx && test -x /usr/local/bin/motion-classify.py && test -x /var/lib/doorbell/venv/bin/python3") == nil

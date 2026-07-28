@@ -2,9 +2,11 @@ package device
 
 import (
 	"encoding/json"
+	"fmt"
 )
 
-// Identity is written to /etc/doorbell/identity.json on the Pi (v2 factory provision).
+// Identity is written to the device etc dir (v2 factory provision).
+// Doorbell: /etc/doorbell/identity.json — NVR: /etc/vyooham/identity.json.
 type Identity struct {
 	GlobalDeviceID  string `json:"global_device_id"`
 	DeviceID        string `json:"device_id"`
@@ -31,4 +33,13 @@ func BuildIdentityJSON(globalID, deviceIDShort, dtid, dsid, serial, hw, mqttUser
 		Claimed:         false,
 	}
 	return json.MarshalIndent(id, "", "  ")
+}
+
+// ParseIdentity unmarshals identity.json bytes.
+func ParseIdentity(identityJSON []byte) (Identity, error) {
+	var id Identity
+	if err := json.Unmarshal(identityJSON, &id); err != nil {
+		return Identity{}, fmt.Errorf("parse identity.json: %w", err)
+	}
+	return id, nil
 }

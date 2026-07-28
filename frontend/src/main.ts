@@ -12,6 +12,9 @@ import {
   CreateCapability,
   CreateDeviceFamily,
   CreateDeviceType,
+  PatchCapability,
+  PatchDeviceFamily,
+  PatchDeviceType,
   ApplyRegistry,
   ListEntitlements,
   CreateEntitlement,
@@ -64,6 +67,9 @@ let capabilities: gateway.Capability[] = [];
 let families: gateway.DeviceFamily[] = [];
 let entitlements: gateway.Entitlement[] = [];
 let plans: gateway.Plan[] = [];
+let editingCapId: string | null = null;
+let editingFamilyId: string | null = null;
+let editingTypeId: string | null = null;
 let editingEntitlementId: string | null = null;
 let editingPlanId: string | null = null;
 let planEntitlementDrafts: { key: string; value: string }[] = [{ key: '', value: 'true' }];
@@ -374,14 +380,41 @@ function renderProvision(): string {
   `;
 }
 
+function resolveInstallProfileLabel(dtid: string): { profile: string; detail: string } {
+  const t = deviceTypes.find(d => d.dtid === dtid);
+  if (!t) {
+    return { profile: 'unknown', detail: 'DTID not in loaded registry types' };
+  }
+  const caps = t.capabilities || [];
+  if (t.dfid === 'df_door0001' || caps.includes('cap_cam00001')) {
+    return { profile: 'doorbell', detail: `${t.friendly_name} → /etc/doorbell + doorbell-agent + camera deps` };
+  }
+  if (t.dfid === 'df_nvr0001' || caps.includes('cap_mcr00012') || caps.includes('cap_lan00014')) {
+    return { profile: 'nvr', detail: `${t.friendly_name} → /etc/vyooham + control-agent (no camera deps)` };
+  }
+  return { profile: 'unsupported', detail: `${t.friendly_name} (dfid=${t.dfid}) has no install profile` };
+}
+
 function renderInstall(): string {
+  const installProfile = provisionResult
+    ? resolveInstallProfileLabel(provisionResult.dtid)
+    : null;
   const summary = provisionResult ? `
     <div class="summary">
       <strong>global_device_id:</strong> <code>${esc(provisionResult.global_device_id)}</code><br/>
       <strong>DSID:</strong> <code>${esc(provisionResult.dsid)}</code><br/>
-      <strong>DTID:</strong> <code>${esc(provisionResult.dtid)}</code> · unit <code>${esc(provisionResult.device_id)}</code>
+      <strong>DTID:</strong> <code>${esc(provisionResult.dtid)}</code> · unit <code>${esc(provisionResult.device_id)}</code><br/>
+      <strong>Install profile:</strong> <code>${esc(installProfile!.profile)}</code> — ${esc(installProfile!.detail)}
     </div>
   ` : '';
+
+  const isNvr = installProfile?.profile === 'nvr';
+  const checkoutLabel = isNvr
+    ? 'Build latest control-agent from vyooham-nvr git and install on device'
+    : 'Download latest CI doorbell-agent build and install on device';
+  const envLabel = isNvr
+    ? `Deploy /etc/vyooham/agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}`
+    : `Deploy /etc/doorbell/agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}`;
 
   return `
     <div class="panel-toolbar">
@@ -395,15 +428,15 @@ function renderInstall(): string {
     </div>
     <label class="checkbox-field">
       <input type="checkbox" id="checkoutAgent" ${state.checkoutAgent ? 'checked' : ''} />
-      Download latest CI agent build and install on Pi
+      ${esc(checkoutLabel)}
     </label>
     <label class="checkbox-field">
       <input type="checkbox" id="deployAgentEnv" ${state.deployAgentEnv ? 'checked' : ''} />
-      Deploy agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}
+      ${esc(envLabel)}
     </label>
     <div class="actions">
       <button class="secondary" id="btnBack">Back</button>
-      <button class="primary" id="btnInstall">Install on Pi</button>
+      <button class="primary" id="btnInstall">Install on device</button>
       <button class="primary" id="btnVerify">Verify MQTT</button>
     </div>
     <div id="verifyResult"></div>
@@ -412,6 +445,10 @@ function renderInstall(): string {
 }
 
 function renderRegistryCapabilities(): string {
+  const editing = editingCapId
+    ? capabilities.find(c => c.capid === editingCapId)
+    : undefined;
+
   const rows = capabilities.length
     ? capabilities.map(c => `
       <tr>
@@ -419,8 +456,35 @@ function renderRegistryCapabilities(): string {
         <td>${esc(c.friendly_name)}</td>
         <td>${esc(c.layer)}</td>
         <td>${c.deprecated ? 'yes' : '—'}</td>
+        <td><button type="button" class="link-btn btnEditCap" data-cap-id="${esc(c.capid || '')}">Edit</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="4" class="empty">No capabilities yet</td></tr>';
+    : '<tr><td colspan="5" class="empty">No capabilities yet</td></tr>';
+
+  const editSection = editing ? `
+    <h3 class="section-title">Edit capability</h3>
+    <p class="hint">CAPID cannot be changed after creation.</p>
+    <div class="row">
+      <div class="field"><label>CAPID</label><input value="${esc(editing.capid)}" disabled /></div>
+      <div class="field"><label>Name</label><input id="editCapName" value="${esc(editing.friendly_name)}" /></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Layer</label>
+        <select id="editCapLayer">
+          <option value="intrinsic" ${editing.layer === 'intrinsic' ? 'selected' : ''}>intrinsic</option>
+          <option value="runtime" ${editing.layer === 'runtime' ? 'selected' : ''}>runtime</option>
+        </select>
+      </div>
+      <div class="field"><label>Description</label><input id="editCapDesc" value="${esc(editing.description || '')}" /></div>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" id="editCapDeprecated" ${editing.deprecated ? 'checked' : ''} /> Deprecated</label>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnSaveCap">Save changes</button>
+      <button class="secondary" id="btnCancelEditCap">Cancel</button>
+    </div>
+  ` : '';
 
   return `
     <div class="panel-toolbar">
@@ -429,9 +493,10 @@ function renderRegistryCapabilities(): string {
     </div>
     <h2>Capabilities</h2>
     <table class="registry-table">
-      <thead><tr><th>CAPID</th><th>Name</th><th>Layer</th><th>Deprecated</th></tr></thead>
+      <thead><tr><th>CAPID</th><th>Name</th><th>Layer</th><th>Deprecated</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${editSection}
     <h3 class="section-title">Add capability</h3>
     <div class="row">
       <div class="field"><label>CAPID</label><input id="newCapID" placeholder="cap_cam00001" /></div>
@@ -455,6 +520,10 @@ function renderRegistryCapabilities(): string {
 }
 
 function renderRegistryFamilies(): string {
+  const editing = editingFamilyId
+    ? families.find(f => f.dfid === editingFamilyId)
+    : undefined;
+
   const rows = families.length
     ? families.map(f => `
       <tr>
@@ -462,8 +531,26 @@ function renderRegistryFamilies(): string {
         <td>${esc(f.friendly_name)}</td>
         <td>${esc(f.description || '')}</td>
         <td>${f.deprecated ? 'yes' : '—'}</td>
+        <td><button type="button" class="link-btn btnEditFamily" data-df-id="${esc(f.dfid || '')}">Edit</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="4" class="empty">No families yet</td></tr>';
+    : '<tr><td colspan="5" class="empty">No families yet</td></tr>';
+
+  const editSection = editing ? `
+    <h3 class="section-title">Edit family</h3>
+    <p class="hint">DFID cannot be changed after creation.</p>
+    <div class="row">
+      <div class="field"><label>DFID</label><input value="${esc(editing.dfid)}" disabled /></div>
+      <div class="field"><label>Name</label><input id="editFamilyName" value="${esc(editing.friendly_name)}" /></div>
+    </div>
+    <div class="field"><label>Description</label><input id="editFamilyDesc" value="${esc(editing.description || '')}" /></div>
+    <div class="field">
+      <label><input type="checkbox" id="editFamilyDeprecated" ${editing.deprecated ? 'checked' : ''} /> Deprecated</label>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnSaveFamily">Save changes</button>
+      <button class="secondary" id="btnCancelEditFamily">Cancel</button>
+    </div>
+  ` : '';
 
   return `
     <div class="panel-toolbar">
@@ -472,9 +559,10 @@ function renderRegistryFamilies(): string {
     </div>
     <h2>Device families</h2>
     <table class="registry-table">
-      <thead><tr><th>DFID</th><th>Name</th><th>Description</th><th>Deprecated</th></tr></thead>
+      <thead><tr><th>DFID</th><th>Name</th><th>Description</th><th>Deprecated</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${editSection}
     <h3 class="section-title">Add family</h3>
     <div class="row">
       <div class="field"><label>DFID</label><input id="newDFID" placeholder="df_door0001" /></div>
@@ -489,6 +577,10 @@ function renderRegistryFamilies(): string {
 }
 
 function renderRegistryTypes(): string {
+  const editing = editingTypeId
+    ? deviceTypes.find(t => t.dtid === editingTypeId)
+    : undefined;
+
   const rows = deviceTypes.length
     ? deviceTypes.map(t => `
       <tr>
@@ -497,8 +589,9 @@ function renderRegistryTypes(): string {
         <td><code>${esc(t.dfid)}</code></td>
         <td>${(t.capabilities || []).map(c => `<code>${esc(c)}</code>`).join(' ') || '—'}</td>
         <td>${t.deprecated ? 'yes' : '—'}</td>
+        <td><button type="button" class="link-btn btnEditType" data-dt-id="${esc(t.dtid || '')}">Edit</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="5" class="empty">No device types yet</td></tr>';
+    : '<tr><td colspan="6" class="empty">No device types yet</td></tr>';
 
   const familyOptions = families.map(f =>
     `<option value="${esc(f.dfid)}">${esc(f.friendly_name || f.dfid)}</option>`
@@ -511,6 +604,42 @@ function renderRegistryTypes(): string {
     </label>
   `).join('') || '<p class="hint">Create capabilities first.</p>';
 
+  const selectedCaps = new Set(editing?.capabilities || []);
+  const editCapChecks = editing
+    ? (capabilities
+        .filter(c => !c.deprecated || selectedCaps.has(c.capid))
+        .map(c => `
+          <label class="checkbox-field cap-check">
+            <input type="checkbox" class="editTypeCap" value="${esc(c.capid)}" ${selectedCaps.has(c.capid) ? 'checked' : ''} />
+            <span><code>${esc(c.capid)}</code> · ${esc(c.friendly_name)}</span>
+          </label>
+        `).join('') || '<p class="hint">No capabilities available.</p>')
+    : '';
+
+  const editSection = editing ? `
+    <h3 class="section-title">Edit device type</h3>
+    <p class="hint">DTID and family cannot be changed after creation.</p>
+    <div class="row">
+      <div class="field"><label>DTID</label><input value="${esc(editing.dtid)}" disabled /></div>
+      <div class="field"><label>Family (DFID)</label><input value="${esc(editing.dfid)}" disabled /></div>
+    </div>
+    <div class="row">
+      <div class="field"><label>Name</label><input id="editTypeName" value="${esc(editing.friendly_name)}" /></div>
+      <div class="field"><label>Description</label><input id="editTypeDesc" value="${esc(editing.description || '')}" /></div>
+    </div>
+    <div class="field">
+      <label>Capabilities</label>
+      <div class="cap-grid">${editCapChecks}</div>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" id="editTypeDeprecated" ${editing.deprecated ? 'checked' : ''} /> Deprecated</label>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnSaveType">Save changes</button>
+      <button class="secondary" id="btnCancelEditType">Cancel</button>
+    </div>
+  ` : '';
+
   return `
     <div class="panel-toolbar">
       <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
@@ -518,9 +647,10 @@ function renderRegistryTypes(): string {
     </div>
     <h2>Device types</h2>
     <table class="registry-table">
-      <thead><tr><th>DTID</th><th>Name</th><th>Family</th><th>Capabilities</th><th>Deprecated</th></tr></thead>
+      <thead><tr><th>DTID</th><th>Name</th><th>Family</th><th>Capabilities</th><th>Deprecated</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${editSection}
     <h3 class="section-title">Add device type</h3>
     <div class="row">
       <div class="field"><label>DTID</label><input id="newDTID" placeholder="dt_wired0002" /></div>
@@ -865,6 +995,9 @@ function bindEvents() {
 
   document.getElementById('btnOpenRegistry')?.addEventListener('click', () => {
     registryTab = 'types';
+    editingCapId = null;
+    editingFamilyId = null;
+    editingTypeId = null;
     view = 'registry';
     void loadRegistryData();
   });
@@ -878,6 +1011,9 @@ function bindEvents() {
   });
 
   document.getElementById('btnBackDashboard')?.addEventListener('click', () => {
+    editingCapId = null;
+    editingFamilyId = null;
+    editingTypeId = null;
     view = 'dashboard';
     render();
   });
@@ -891,6 +1027,9 @@ function bindEvents() {
         return;
       }
       registryTab = el.getAttribute('data-tab') as RegistryTab;
+      editingCapId = null;
+      editingFamilyId = null;
+      editingTypeId = null;
       render();
     });
   });
@@ -899,8 +1038,50 @@ function bindEvents() {
   document.getElementById('btnRefreshSubscriptions')?.addEventListener('click', () => void loadSubscriptionsData());
 
   document.getElementById('btnCreateCap')?.addEventListener('click', () => void createCapability());
+  document.getElementById('btnSaveCap')?.addEventListener('click', () => void saveCapability());
+  document.getElementById('btnCancelEditCap')?.addEventListener('click', () => {
+    editingCapId = null;
+    render();
+  });
+  document.querySelectorAll('.btnEditCap').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-cap-id');
+      if (id) {
+        editingCapId = id;
+        render();
+      }
+    });
+  });
   document.getElementById('btnCreateFamily')?.addEventListener('click', () => void createFamily());
+  document.getElementById('btnSaveFamily')?.addEventListener('click', () => void saveFamily());
+  document.getElementById('btnCancelEditFamily')?.addEventListener('click', () => {
+    editingFamilyId = null;
+    render();
+  });
+  document.querySelectorAll('.btnEditFamily').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-df-id');
+      if (id) {
+        editingFamilyId = id;
+        render();
+      }
+    });
+  });
   document.getElementById('btnCreateType')?.addEventListener('click', () => void createDeviceType());
+  document.getElementById('btnSaveType')?.addEventListener('click', () => void saveDeviceType());
+  document.getElementById('btnCancelEditType')?.addEventListener('click', () => {
+    editingTypeId = null;
+    render();
+  });
+  document.querySelectorAll('.btnEditType').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-dt-id');
+      if (id) {
+        editingTypeId = id;
+        render();
+      }
+    });
+  });
   document.getElementById('btnCreateEntitlement')?.addEventListener('click', () => void createEntitlement());
   document.getElementById('btnSaveEntitlement')?.addEventListener('click', () => void saveEntitlement());
   document.getElementById('btnCancelEditEntitlement')?.addEventListener('click', () => {
@@ -1288,6 +1469,24 @@ async function createCapability() {
   }
 }
 
+async function saveCapability() {
+  if (!editingCapId) return;
+  setMsg('Saving capability…');
+  try {
+    await PatchCapability(editingCapId, {
+      friendly_name: val('editCapName'),
+      layer: val('editCapLayer') || 'intrinsic',
+      description: val('editCapDesc'),
+      deprecated: (document.getElementById('editCapDeprecated') as HTMLInputElement)?.checked ?? false,
+    } as gateway.CapabilityPatch);
+    editingCapId = null;
+    setMsg('Capability updated', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
 async function createFamily() {
   setMsg('Creating family…');
   try {
@@ -1298,6 +1497,23 @@ async function createFamily() {
       deprecated: false,
     });
     setMsg('Family created', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function saveFamily() {
+  if (!editingFamilyId) return;
+  setMsg('Saving family…');
+  try {
+    await PatchDeviceFamily(editingFamilyId, {
+      friendly_name: val('editFamilyName'),
+      description: val('editFamilyDesc'),
+      deprecated: (document.getElementById('editFamilyDeprecated') as HTMLInputElement)?.checked ?? false,
+    } as gateway.DeviceFamilyPatch);
+    editingFamilyId = null;
+    setMsg('Family updated', false);
     await loadRegistryData();
   } catch (e: any) {
     setMsg(e?.message || String(e), true);
@@ -1318,6 +1534,26 @@ async function createDeviceType() {
       deprecated: false,
     });
     setMsg('Device type created', false);
+    await loadRegistryData();
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function saveDeviceType() {
+  if (!editingTypeId) return;
+  const caps = Array.from(document.querySelectorAll<HTMLInputElement>('.editTypeCap:checked'))
+    .map(el => el.value);
+  setMsg('Saving device type…');
+  try {
+    await PatchDeviceType(editingTypeId, {
+      friendly_name: val('editTypeName'),
+      description: val('editTypeDesc'),
+      capabilities: caps,
+      deprecated: (document.getElementById('editTypeDeprecated') as HTMLInputElement)?.checked ?? false,
+    } as gateway.DeviceTypePatch);
+    editingTypeId = null;
+    setMsg('Device type updated', false);
     await loadRegistryData();
   } catch (e: any) {
     setMsg(e?.message || String(e), true);
@@ -1431,9 +1667,11 @@ async function doInstall() {
       checkout_agent: state.checkoutAgent,
       github_token: gh,
     });
-    const depsOk = result.ffmpeg_ok && result.go2rtc_ok && result.motion_ok;
+    const isNvr = result.profile === 'nvr';
+    const depsOk = isNvr || (result.ffmpeg_ok && result.go2rtc_ok && result.motion_ok);
     const suffix = [
-      depsOk ? 'deps OK' : '',
+      result.profile ? `profile ${result.profile}` : '',
+      isNvr ? '' : (depsOk ? 'deps OK' : ''),
       result.setup_server_ok ? 'Setup mode (:4444)' : '',
       result.agent_active ? 'Agent active' : '',
     ].filter(Boolean).join(' · ');

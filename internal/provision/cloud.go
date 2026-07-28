@@ -18,6 +18,8 @@ type Result struct {
 	SerialNumber   string `json:"serial_number"`
 	MQTTUsername   string `json:"mqtt_username"`
 	MQTTPassword   string `json:"mqtt_password"`
+	DeviceCrt      string `json:"device_crt,omitempty"`
+	CaCrt          string `json:"ca_crt,omitempty"`
 	ProvisionedAt  string `json:"provisioned_at"`
 }
 

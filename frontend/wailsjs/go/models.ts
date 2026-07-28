@@ -14,6 +14,8 @@ export namespace config {
 	    agent_repo_branch: string;
 	    agent_repo_path: string;
 	    agent_artifact_name: string;
+	    nvr_agent_repo_url: string;
+	    nvr_agent_repo_branch: string;
 	    access_token?: string;
 	    refresh_token?: string;
 	    token_expires_at?: number;
@@ -37,6 +39,8 @@ export namespace config {
 	        this.agent_repo_branch = source["agent_repo_branch"];
 	        this.agent_repo_path = source["agent_repo_path"];
 	        this.agent_artifact_name = source["agent_artifact_name"];
+	        this.nvr_agent_repo_url = source["nvr_agent_repo_url"];
+	        this.nvr_agent_repo_branch = source["nvr_agent_repo_branch"];
 	        this.access_token = source["access_token"];
 	        this.refresh_token = source["refresh_token"];
 	        this.token_expires_at = source["token_expires_at"];
@@ -48,6 +52,7 @@ export namespace config {
 export namespace device {
 	
 	export class InstallResult {
+	    profile: string;
 	    agent_active: boolean;
 	    agent_checked_out: boolean;
 	    ffmpeg_ok: boolean;
@@ -62,6 +67,7 @@ export namespace device {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.profile = source["profile"];
 	        this.agent_active = source["agent_active"];
 	        this.agent_checked_out = source["agent_checked_out"];
 	        this.ffmpeg_ok = source["ffmpeg_ok"];
@@ -123,6 +129,24 @@ export namespace gateway {
 	        this.deprecated = source["deprecated"];
 	    }
 	}
+	export class CapabilityPatch {
+	    friendly_name: string;
+	    layer?: string;
+	    description?: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new CapabilityPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.friendly_name = source["friendly_name"];
+	        this.layer = source["layer"];
+	        this.description = source["description"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
 	export class DeviceFamily {
 	    dfid: string;
 	    friendly_name: string;
@@ -140,6 +164,22 @@ export namespace gateway {
 	        this.friendly_name = source["friendly_name"];
 	        this.description = source["description"];
 	        this.device_types = source["device_types"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+	export class DeviceFamilyPatch {
+	    friendly_name: string;
+	    description?: string;
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceFamilyPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
 	        this.deprecated = source["deprecated"];
 	    }
 	}
@@ -162,6 +202,24 @@ export namespace gateway {
 	        this.friendly_name = source["friendly_name"];
 	        this.capabilities = source["capabilities"];
 	        this.description = source["description"];
+	        this.deprecated = source["deprecated"];
+	    }
+	}
+	export class DeviceTypePatch {
+	    friendly_name: string;
+	    description?: string;
+	    capabilities: string[];
+	    deprecated: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeviceTypePatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.friendly_name = source["friendly_name"];
+	        this.description = source["description"];
+	        this.capabilities = source["capabilities"];
 	        this.deprecated = source["deprecated"];
 	    }
 	}

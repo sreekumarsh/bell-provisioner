@@ -8,39 +8,58 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// AgentInstallOptions configures CI artifact deploy to the Pi.
+// AgentInstallOptions configures agent binary deploy.
 type AgentInstallOptions struct {
 	Enabled bool
 	Bundle  *agentrelease.Bundle
+	// BinaryName and ServiceName default from profile when empty.
+	BinaryName  string
+	ServiceName string
 }
 
-// DeployAgentBundle installs doorbell-agent from a CI artifact (binary + systemd unit).
-func DeployAgentBundle(client *ssh.Client, sudoPassword string, bundle *agentrelease.Bundle) error {
+// DeployAgentBundle installs an agent binary + systemd unit from a bundle.
+func DeployAgentBundle(client *ssh.Client, sudoPassword string, opts AgentInstallOptions) error {
+	bundle := opts.Bundle
 	if bundle == nil || len(bundle.Binary) == 0 {
 		return fmt.Errorf("agent bundle is empty")
 	}
 	if len(bundle.ServiceUnit) == 0 {
 		return fmt.Errorf("agent bundle missing systemd unit")
 	}
+	binaryName := opts.BinaryName
+	if binaryName == "" {
+		binaryName = "doorbell-agent"
+	}
+	serviceName := opts.ServiceName
+	if serviceName == "" {
+		serviceName = binaryName
+	}
 
-	if err := uploadFile(client, "/tmp/doorbell-agent", bundle.Binary, 0755); err != nil {
+	tmpBin := "/tmp/" + binaryName
+	tmpUnit := "/tmp/" + serviceName + ".service"
+	if err := uploadFile(client, tmpBin, bundle.Binary, 0755); err != nil {
 		return fmt.Errorf("upload agent binary: %w", err)
 	}
-	if err := uploadFile(client, "/tmp/doorbell-agent.service", bundle.ServiceUnit, 0644); err != nil {
+	if err := uploadFile(client, tmpUnit, bundle.ServiceUnit, 0644); err != nil {
 		return fmt.Errorf("upload systemd unit: %w", err)
 	}
 
-	installScript := `
+	installScript := fmt.Sprintf(`
 sudo mkdir -p /usr/local/bin /etc/systemd/system
-sudo install -m 755 /tmp/doorbell-agent /usr/local/bin/doorbell-agent
-sudo install -m 644 /tmp/doorbell-agent.service /etc/systemd/system/doorbell-agent.service
-rm -f /tmp/doorbell-agent /tmp/doorbell-agent.service
+sudo install -m 755 %s /usr/local/bin/%s
+sudo install -m 644 %s /etc/systemd/system/%s.service
+rm -f %s %s
 sudo systemctl daemon-reload
-sudo systemctl enable doorbell-agent 2>/dev/null || true
-echo "==> Installed doorbell-agent from CI artifact"
-`
+sudo systemctl enable %s 2>/dev/null || true
+echo "==> Installed %s"
+`,
+		shellSingleQuote(tmpBin), binaryName,
+		shellSingleQuote(tmpUnit), serviceName,
+		shellSingleQuote(tmpBin), shellSingleQuote(tmpUnit),
+		serviceName, binaryName,
+	)
 	if err := runSudo(client, sudoPassword, installScript); err != nil {
-		return fmt.Errorf("install agent on Pi: %w", err)
+		return fmt.Errorf("install agent on device: %w", err)
 	}
 	return nil
 }

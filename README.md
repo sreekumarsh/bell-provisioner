@@ -13,8 +13,8 @@ Mac utility for factory/lab device provisioning. After **admin login**, the dash
    - **Environment** — VPS vs Mac LAN backend, SSH target, GitHub token
    - **Discover** — mDNS / subnet scan / manual IP
    - **Provision (v2)** — select **DTID** + factory **device_id**, then `POST /admin/devices/provision`
-   - **Install + verify** — download `doorbell-agent-linux-arm64` CI artifact, push to Pi via SSH, MQTT smoke test
-4. **Registry** (from dashboard) — `GET/POST /admin/capabilities`, `/admin/device-families`, `/admin/device-types`, and `POST /admin/device-registry/apply`
+   - **Install + verify** — resolve install profile from DTID (doorbell vs NVR), deploy matching agent + deps, MQTT smoke test
+4. **Registry** (from dashboard) — `GET/POST/PATCH /admin/capabilities`, `/admin/device-families`, `/admin/device-types`, and `POST /admin/device-registry/apply`
 
 ## Prerequisites
 
@@ -109,18 +109,30 @@ Saved to `~/Library/Application Support/bell-provisioner/config.json` (`chmod 06
 | Gateway URL | `https://api.vyooham.com` |
 | Backend profile | VPS |
 | SSH | `pi@raspberrypi.local:22` |
-| Agent repo | `git@github.com:sreekumarsh/pi-streamer.git` (used to resolve GitHub owner/repo) |
-| Agent artifact | `doorbell-agent-linux-arm64` |
+| Agent repo (doorbell) | `git@github.com:sreekumarsh/pi-streamer.git` |
+| Agent artifact (doorbell) | `doorbell-agent-linux-arm64` |
+| NVR agent repo | `git@github.com:sreekumarsh/vyooham-nvr.git` (`main`) |
 
-## Agent install flow (CI artifact)
+## Install profiles (per device type)
+
+Install resolves the provisioned **DTID** via `GET /admin/device-types` and picks a profile by **family** (with capability fallback):
+
+| Registry | Profile | On-device | Agent | Runtime deps |
+|----------|---------|-----------|-------|--------------|
+| Family `df_door0001` (or `cap_cam00001`) | **doorbell** | `/etc/doorbell/` | `doorbell-agent` (CI artifact from pi-streamer) | ffmpeg, v4l-utils, go2rtc, motion/ONNX |
+| Family `df_nvr0001` (or `cap_mcr00012` / `cap_lan00014`) | **nvr** | `/etc/vyooham/` | `control-agent` (built from vyooham-nvr git on Mac, linux/amd64) | none for control-agent (no camera stack) |
+
+Seed types: `dt_wired0001` (doorbell), `dt_nvr0001` (Vyooham NVR v1).
+
+## Doorbell agent install (CI artifact)
 
 Matches **pi-streamer** workflow `.github/workflows/agent.yml`:
 
 1. On push to `main` (under `agent/**`), CI builds `linux/arm64` `doorbell-agent`, packages `pi-release/` (binary, `doorbell-agent.service`, `VERSION`) into `doorbell-agent-linux-arm64.tar.gz`, and uploads artifact **`doorbell-agent-linux-arm64`**.
 2. **bell-provisioner** (on your Mac) calls the GitHub API with your token, downloads the latest artifact zip, and extracts the binary + systemd unit.
-3. Over SSH, the app uploads files to `/tmp` on the Pi, runs `sudo install` to `/usr/local/bin/doorbell-agent` and `/etc/systemd/system/`, installs **OS runtime dependencies** (see below), then deploys `/etc/doorbell/` credentials and restarts the service.
+3. Over SSH, the app uploads files to `/tmp` on the Pi, runs `sudo install` to `/usr/local/bin/doorbell-agent` and `/etc/systemd/system/`, installs **doorbell OS runtime dependencies** (see below), then deploys `/etc/doorbell/` credentials and restarts the service.
 
-### OS packages installed on the Pi (Install + verify)
+### Doorbell OS packages (Install + verify)
 
 Before the agent restarts, provisioner runs an idempotent apt + binary step over SSH (same sudo password as login). Only missing items are installed:
 
@@ -134,25 +146,36 @@ Before the agent restarts, provisioner runs an idempotent apt + binary step over
 | `/var/lib/doorbell/models/yolov8n.onnx` | YOLOv8n ONNX model (embedded in provisioner, uploaded to Pi) |
 | `/usr/local/bin/motion-classify.py` | Motion inference script (embedded from pi-streamer) |
 
-Provisioner also deploys `agent.env` (when enabled) with `MOTION_*` paths matching the above. After install, it polls `http://<pi>:4444/setup/identity` until the agent setup server responds — the device is ready for QR claim when `claimed:false` in identity.json and setup server is up.
+Provisioner also deploys `agent.env` (when enabled) with `MOTION_*` paths matching the above. After install, it polls `http://<device>:4444/setup/identity` until the agent setup server responds — the device is ready for QR claim when `claimed:false` in identity.json and setup server is up.
 
-Re-running Install on the same Pi is safe: existing packages and go2rtc are detected and skipped. If apt fails (no network, wrong sudo password), the UI reports the error.
+Re-running Install on the same device is safe: existing packages and go2rtc are detected and skipped. If apt fails (no network, wrong sudo password), the UI reports the error.
+
+## NVR agent install (git build)
+
+There is no Actions artifact for `control-agent` yet. For the **nvr** profile:
+
+1. Download the latest `vyooham-nvr` tarball from GitHub (`main`).
+2. On the Mac, `GOOS=linux GOARCH=amd64 go build` `services/control-agent/cmd/control-agent`.
+3. Over SSH, install binary + embedded systemd unit, write credentials to `/etc/vyooham/`, deploy NVR `agent.env` (MQTT + identity paths only — no camera/GPIO/motion), restart `control-agent`, poll setup `:4444`.
+
+CLI deps-only helper: `go run ./cmd/install-deps --profile=doorbell|nvr`.
 
 ### GitHub token permissions
 
 **Fine-grained PAT** (recommended):
 
-- Repository: `sreekumarsh/pi-streamer`
+- Repositories: `sreekumarsh/pi-streamer` and `sreekumarsh/vyooham-nvr`
 - **Contents:** Read-only
-- **Actions:** Read-only (to download workflow artifacts)
+- **Actions:** Read-only (doorbell CI artifacts)
 
-**Classic PAT:** `repo` scope (private repository).
+**Classic PAT:** `repo` scope (private repositories).
 
 Paste in **Environment → GitHub token** (stored in `config.json` when you continue), or set `"github_token"` in that file directly.
 
 ## Related docs
 
 - [pi-streamer Agent workflow](https://github.com/sreekumarsh/pi-streamer/blob/main/.github/workflows/agent.yml)
+- [vyooham-nvr control-agent](https://github.com/sreekumarsh/vyooham-nvr/blob/main/services/control-agent/README.md) — NVR identity path `/etc/vyooham/`
 - [device-types-and-capabilities.md](https://github.com/sreekumarsh/bell-docs/blob/main/architecture/device-types-and-capabilities.md) — v2 IDs and provision flow
 - [go-agent.md § identity.json](https://github.com/sreekumarsh/bell-docs/blob/main/firmware/go-agent.md) — on-device identity format
 - [provisioning-utility.md](https://github.com/sreekumarsh/bell-docs/blob/main/operations/provisioning-utility.md) — operator guide
@@ -163,3 +186,4 @@ Paste in **Environment → GitHub token** (stored in `config.json` when you cont
 
 - v2.1: factory HTTP endpoint on device (no SSH)
 - v3: USB credential pipe
+- Switch NVR install to CI artifacts once vyooham-nvr publishes them (same pattern as doorbell)

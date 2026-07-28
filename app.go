@@ -14,6 +14,7 @@ import (
 	"bell-provisioner/internal/device"
 	"bell-provisioner/internal/discover"
 	"bell-provisioner/internal/gateway"
+	"bell-provisioner/internal/nvrrelease"
 	"bell-provisioner/internal/provision"
 	"bell-provisioner/internal/verify"
 )
@@ -33,6 +34,8 @@ type App struct {
 
 	pendingPrivateKey []byte
 	pendingIdentity   []byte
+	pendingDeviceCrt  []byte
+	pendingCaCrt      []byte
 	pendingDeviceID   string
 	pendingMQTTUser   string
 	pendingMQTTPass   string
@@ -149,6 +152,8 @@ func (a *App) Logout() {
 	a.tokenExpiresAt = time.Time{}
 	a.pendingPrivateKey = nil
 	a.pendingIdentity = nil
+	a.pendingDeviceCrt = nil
+	a.pendingCaCrt = nil
 	a.pendingDeviceID = ""
 	a.pendingMQTTUser = ""
 	a.pendingMQTTPass = ""
@@ -241,6 +246,24 @@ func (a *App) CreateCapability(cap gateway.Capability) (*gateway.Capability, err
 	return client.CreateCapability(cap)
 }
 
+// PatchCapability updates mutable capability fields via PATCH /admin/capabilities/{capid}.
+func (a *App) PatchCapability(capid string, patch gateway.CapabilityPatch) (*gateway.Capability, error) {
+	if strings.TrimSpace(capid) == "" {
+		return nil, fmt.Errorf("capid is required")
+	}
+	if strings.TrimSpace(patch.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	if patch.Layer != "" && patch.Layer != "intrinsic" && patch.Layer != "runtime" {
+		return nil, fmt.Errorf("layer must be intrinsic or runtime")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.PatchCapability(capid, patch)
+}
+
 // ListDeviceFamilies returns registry families.
 func (a *App) ListDeviceFamilies() ([]gateway.DeviceFamily, error) {
 	client, err := a.adminClient()
@@ -265,6 +288,21 @@ func (a *App) CreateDeviceFamily(family gateway.DeviceFamily) (*gateway.DeviceFa
 	return client.CreateDeviceFamily(family)
 }
 
+// PatchDeviceFamily updates mutable family fields via PATCH /admin/device-families/{dfid}.
+func (a *App) PatchDeviceFamily(dfid string, patch gateway.DeviceFamilyPatch) (*gateway.DeviceFamily, error) {
+	if strings.TrimSpace(dfid) == "" {
+		return nil, fmt.Errorf("dfid is required")
+	}
+	if strings.TrimSpace(patch.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.PatchDeviceFamily(dfid, patch)
+}
+
 // CreateDeviceType adds a type via POST /admin/device-types.
 func (a *App) CreateDeviceType(typ gateway.DeviceType) (*gateway.DeviceType, error) {
 	if strings.TrimSpace(typ.DTID) == "" {
@@ -284,6 +322,24 @@ func (a *App) CreateDeviceType(typ gateway.DeviceType) (*gateway.DeviceType, err
 		return nil, err
 	}
 	return client.CreateDeviceType(typ)
+}
+
+// PatchDeviceType updates mutable type fields via PATCH /admin/device-types/{dtid}.
+func (a *App) PatchDeviceType(dtid string, patch gateway.DeviceTypePatch) (*gateway.DeviceType, error) {
+	if strings.TrimSpace(dtid) == "" {
+		return nil, fmt.Errorf("dtid is required")
+	}
+	if strings.TrimSpace(patch.FriendlyName) == "" {
+		return nil, fmt.Errorf("friendly_name is required")
+	}
+	if len(patch.Capabilities) == 0 {
+		return nil, fmt.Errorf("at least one capability is required")
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.PatchDeviceType(dtid, patch)
 }
 
 // ApplyRegistryResult wraps gateway apply output for the UI.
@@ -582,6 +638,14 @@ func (a *App) Provision(req ProvisionRequest) (*ProvisionResult, error) {
 	a.mu.Lock()
 	a.pendingPrivateKey = keypair.PrivateKeyPEM
 	a.pendingIdentity = identityJSON
+	a.pendingDeviceCrt = nil
+	a.pendingCaCrt = nil
+	if result.DeviceCrt != "" {
+		a.pendingDeviceCrt = []byte(result.DeviceCrt)
+	}
+	if result.CaCrt != "" {
+		a.pendingCaCrt = []byte(result.CaCrt)
+	}
 	a.pendingDeviceID = globalID
 	a.pendingMQTTUser = result.MQTTUsername
 	a.pendingMQTTPass = result.MQTTPassword
@@ -616,17 +680,44 @@ func checkoutAgentEnabled(flag *bool) bool {
 	return *flag
 }
 
-// Install pushes credentials to the Pi over SSH.
+// Install pushes credentials and profile-specific agent to the device over SSH.
 func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 	a.mu.Lock()
 	priv := append([]byte(nil), a.pendingPrivateKey...)
 	identity := append([]byte(nil), a.pendingIdentity...)
+	deviceCrt := append([]byte(nil), a.pendingDeviceCrt...)
+	caCrt := append([]byte(nil), a.pendingCaCrt...)
 	cfg := a.cfg
 	a.mu.Unlock()
 
 	if len(priv) == 0 || len(identity) == 0 {
 		return nil, fmt.Errorf("provision the device first")
 	}
+
+	id, err := device.ParseIdentity(identity)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.ensureFreshToken(); err != nil {
+		return nil, err
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	types, err := client.ListDeviceTypes()
+	if err != nil {
+		return nil, fmt.Errorf("list device types: %w", err)
+	}
+	dt, err := device.FindDeviceType(types, id.DTID)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := device.ResolveProfile(dt)
+	if err != nil {
+		return nil, err
+	}
+	spec := profile.Spec()
 
 	host := req.Host
 	if host == "" {
@@ -649,7 +740,12 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 
 	agentEnv := ""
 	if req.DeployAgentEnv {
-		agentEnv = appcfg.AgentEnv(appcfg.BackendProfile(cfg.BackendProfile), cfg.MacIP)
+		backend := appcfg.BackendProfile(cfg.BackendProfile)
+		if profile == device.ProfileNVR {
+			agentEnv = appcfg.ControlAgentEnv(backend, cfg.MacIP)
+		} else {
+			agentEnv = appcfg.AgentEnv(backend, cfg.MacIP)
+		}
 	}
 
 	ghToken := strings.TrimSpace(req.GitHubToken)
@@ -665,13 +761,30 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 		if !appcfg.ValidGitHubToken(ghToken) {
 			return nil, fmt.Errorf("GitHub token in config is invalid or was overwritten — paste a new fine-grained PAT (github_pat_…) or classic token (ghp_…) in Environment and continue")
 		}
-		owner, repo, err := appcfg.GitHubRepo(cfg.AgentRepoURL)
-		if err != nil {
-			return nil, err
-		}
-		bundle, err = agentrelease.FetchLatestDefaultTimeout(owner, repo, ghToken, cfg.AgentArtifactName)
-		if err != nil {
-			return nil, fmt.Errorf("download agent artifact: %w", err)
+		switch profile {
+		case device.ProfileNVR:
+			owner, repo, err := appcfg.GitHubRepo(cfg.NvrAgentRepoURL)
+			if err != nil {
+				return nil, err
+			}
+			nvrBundle, err := nvrrelease.BuildLatestDefaultTimeout(owner, repo, ghToken, cfg.NvrAgentRepoBranch)
+			if err != nil {
+				return nil, fmt.Errorf("build control-agent from git: %w", err)
+			}
+			bundle = &agentrelease.Bundle{
+				Version:     nvrBundle.Version,
+				Binary:      nvrBundle.Binary,
+				ServiceUnit: nvrBundle.ServiceUnit,
+			}
+		default:
+			owner, repo, err := appcfg.GitHubRepo(cfg.AgentRepoURL)
+			if err != nil {
+				return nil, err
+			}
+			bundle, err = agentrelease.FetchLatestDefaultTimeout(owner, repo, ghToken, cfg.AgentArtifactName)
+			if err != nil {
+				return nil, fmt.Errorf("download agent artifact: %w", err)
+			}
 		}
 	}
 
@@ -680,9 +793,11 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 		Port:     port,
 		User:     sshUser,
 		Password: sshPass,
-	}, priv, identity, agentEnv, req.DeployAgentEnv, device.AgentInstallOptions{
-		Enabled: checkoutAgentEnabled(req.CheckoutAgent),
-		Bundle:  bundle,
+	}, profile, priv, identity, deviceCrt, caCrt, agentEnv, req.DeployAgentEnv, device.AgentInstallOptions{
+		Enabled:     checkoutAgentEnabled(req.CheckoutAgent),
+		Bundle:      bundle,
+		BinaryName:  spec.BinaryName,
+		ServiceName: spec.ServiceName,
 	})
 }
 

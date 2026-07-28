@@ -70,6 +70,18 @@ export function Logout() {
   return window['go']['main']['App']['Logout']();
 }
 
+export function PatchCapability(arg1, arg2) {
+  return window['go']['main']['App']['PatchCapability'](arg1, arg2);
+}
+
+export function PatchDeviceFamily(arg1, arg2) {
+  return window['go']['main']['App']['PatchDeviceFamily'](arg1, arg2);
+}
+
+export function PatchDeviceType(arg1, arg2) {
+  return window['go']['main']['App']['PatchDeviceType'](arg1, arg2);
+}
+
 export function PatchEntitlement(arg1, arg2) {
   return window['go']['main']['App']['PatchEntitlement'](arg1, arg2);
 }

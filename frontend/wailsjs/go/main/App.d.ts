@@ -40,6 +40,12 @@ export function Login(arg1:string,arg2:string):Promise<main.LoginResult>;
 
 export function Logout():Promise<void>;
 
+export function PatchCapability(arg1:string,arg2:gateway.CapabilityPatch):Promise<gateway.Capability>;
+
+export function PatchDeviceFamily(arg1:string,arg2:gateway.DeviceFamilyPatch):Promise<gateway.DeviceFamily>;
+
+export function PatchDeviceType(arg1:string,arg2:gateway.DeviceTypePatch):Promise<gateway.DeviceType>;
+
 export function PatchEntitlement(arg1:string,arg2:gateway.EntitlementPatch):Promise<gateway.Entitlement>;
 
 export function PatchPlan(arg1:string,arg2:gateway.PlanPatch):Promise<gateway.Plan>;

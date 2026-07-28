@@ -13,7 +13,7 @@ const (
 	ProfileMacLAN BackendProfile = "mac"
 )
 
-// AgentEnv returns agent.env content for the Pi.
+// AgentEnv returns doorbell-agent.env content for the Pi.
 func AgentEnv(profile BackendProfile, macIP string) string {
 	switch profile {
 	case ProfileMacLAN:
@@ -97,6 +97,42 @@ LOG_LEVEL=info
 LOG_FORMAT=json
 HEARTBEAT_INTERVAL_SECONDS=30
 WATERMARK_ENABLED=true
+`) + "\n"
+	}
+}
+
+// ControlAgentEnv returns agent.env for the NVR control-agent (/etc/vyooham/).
+func ControlAgentEnv(profile BackendProfile, macIP string) string {
+	switch profile {
+	case ProfileMacLAN:
+		ip := macIP
+		if ip == "" {
+			ip = "192.168.4.66"
+		}
+		return fmt.Sprintf(`MQTT_BROKER_URL=tcp://%s:1883
+MQTT_TLS_ENABLED=false
+IDENTITY_PATH=/etc/vyooham/identity.json
+MQTT_TLS_CA_FILE=/etc/vyooham/ca.crt
+MQTT_TLS_CLIENT_CERT=/etc/vyooham/device.crt
+MQTT_TLS_CLIENT_KEY=/etc/vyooham/device.key
+HEARTBEAT_SEC=30
+SETUP_SERVER_PORT=4444
+LOG_LEVEL=info
+LOG_FORMAT=json
+FW_VERSION=dev
+`, ip)
+	default:
+		return strings.TrimSpace(`MQTT_BROKER_URL=tcp://api.vyooham.com:1883
+MQTT_TLS_ENABLED=false
+IDENTITY_PATH=/etc/vyooham/identity.json
+MQTT_TLS_CA_FILE=/etc/vyooham/ca.crt
+MQTT_TLS_CLIENT_CERT=/etc/vyooham/device.crt
+MQTT_TLS_CLIENT_KEY=/etc/vyooham/device.key
+HEARTBEAT_SEC=30
+SETUP_SERVER_PORT=4444
+LOG_LEVEL=info
+LOG_FORMAT=json
+FW_VERSION=dev
 `) + "\n"
 	}
 }

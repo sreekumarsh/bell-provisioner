@@ -34,6 +34,29 @@ type DeviceType struct {
 	Deprecated   bool     `json:"deprecated"`
 }
 
+// CapabilityPatch updates mutable capability fields (PATCH /admin/capabilities/{capid}).
+type CapabilityPatch struct {
+	FriendlyName string `json:"friendly_name"`
+	Layer        string `json:"layer,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Deprecated   bool   `json:"deprecated"`
+}
+
+// DeviceFamilyPatch updates mutable family fields (PATCH /admin/device-families/{dfid}).
+type DeviceFamilyPatch struct {
+	FriendlyName string `json:"friendly_name"`
+	Description  string `json:"description,omitempty"`
+	Deprecated   bool   `json:"deprecated"`
+}
+
+// DeviceTypePatch updates mutable type fields (PATCH /admin/device-types/{dtid}).
+type DeviceTypePatch struct {
+	FriendlyName string   `json:"friendly_name"`
+	Description  string   `json:"description,omitempty"`
+	Capabilities []string `json:"capabilities"`
+	Deprecated   bool     `json:"deprecated"`
+}
+
 // ApplyRegistryResult is returned from POST /admin/device-registry/apply.
 type ApplyRegistryResult struct {
 	Added    []string `json:"added"`
@@ -69,6 +92,23 @@ func (c *Client) CreateCapability(cap Capability) (*Capability, error) {
 		return nil, err
 	}
 	if status != http.StatusCreated {
+		return nil, parseError(status, data)
+	}
+	var out Capability
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode capability: %w", err)
+	}
+	return &out, nil
+}
+
+// PatchCapability updates mutable capability fields.
+func (c *Client) PatchCapability(capid string, patch CapabilityPatch) (*Capability, error) {
+	path := "/admin/capabilities/" + capid
+	data, status, err := c.do(http.MethodPatch, path, patch, true)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
 		return nil, parseError(status, data)
 	}
 	var out Capability
@@ -115,6 +155,23 @@ func (c *Client) CreateDeviceFamily(family DeviceFamily) (*DeviceFamily, error) 
 	return &out, nil
 }
 
+// PatchDeviceFamily updates mutable family fields.
+func (c *Client) PatchDeviceFamily(dfid string, patch DeviceFamilyPatch) (*DeviceFamily, error) {
+	path := "/admin/device-families/" + dfid
+	data, status, err := c.do(http.MethodPatch, path, patch, true)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, parseError(status, data)
+	}
+	var out DeviceFamily
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode family: %w", err)
+	}
+	return &out, nil
+}
+
 // ListDeviceTypes returns registry types for the provision DTID picker.
 func (c *Client) ListDeviceTypes() ([]DeviceType, error) {
 	data, status, err := c.do(http.MethodGet, "/admin/device-types", nil, true)
@@ -143,6 +200,23 @@ func (c *Client) CreateDeviceType(typ DeviceType) (*DeviceType, error) {
 		return nil, err
 	}
 	if status != http.StatusCreated {
+		return nil, parseError(status, data)
+	}
+	var out DeviceType
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("decode device type: %w", err)
+	}
+	return &out, nil
+}
+
+// PatchDeviceType updates mutable type fields.
+func (c *Client) PatchDeviceType(dtid string, patch DeviceTypePatch) (*DeviceType, error) {
+	path := "/admin/device-types/" + dtid
+	data, status, err := c.do(http.MethodPatch, path, patch, true)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
 		return nil, parseError(status, data)
 	}
 	var out DeviceType
