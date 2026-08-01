@@ -23,6 +23,14 @@ type AppConfig struct {
 	AgentArtifactName string `json:"agent_artifact_name"`
 	NvrAgentRepoURL    string `json:"nvr_agent_repo_url"`
 	NvrAgentRepoBranch string `json:"nvr_agent_repo_branch"`
+
+	SenseAgentRepoURL    string `json:"sense_agent_repo_url"`
+	SenseAgentRepoBranch string `json:"sense_agent_repo_branch"`
+	// SenseMQTTTransport is "plain" or "mtls"; empty means DefaultSenseTransport.
+	// Set to "mtls" only once mqtt.vyooham.com resolves and auth-service issues
+	// device certs — see DefaultSenseTransport.
+	SenseMQTTTransport string `json:"sense_mqtt_transport,omitempty"`
+
 	AccessToken        string `json:"access_token,omitempty"`
 	RefreshToken       string `json:"refresh_token,omitempty"`
 	TokenExpiresAt     int64  `json:"token_expires_at,omitempty"`
@@ -91,6 +99,12 @@ func Load() AppConfig {
 	}
 	if cfg.NvrAgentRepoBranch == "" {
 		cfg.NvrAgentRepoBranch = DefaultNvrAgentRepoBranch
+	}
+	if cfg.SenseAgentRepoURL == "" {
+		cfg.SenseAgentRepoURL = DefaultSenseAgentRepoURL
+	}
+	if cfg.SenseAgentRepoBranch == "" {
+		cfg.SenseAgentRepoBranch = DefaultSenseAgentRepoBranch
 	}
 	return cfg
 }

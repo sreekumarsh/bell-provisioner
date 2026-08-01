@@ -112,6 +112,8 @@ Saved to `~/Library/Application Support/bell-provisioner/config.json` (`chmod 06
 | Agent repo (doorbell) | `git@github.com:sreekumarsh/pi-streamer.git` |
 | Agent artifact (doorbell) | `doorbell-agent-linux-arm64` |
 | NVR agent repo | `git@github.com:sreekumarsh/vyooham-nvr.git` (`main`) |
+| Sense agent repo | `git@github.com:sreekumarsh/vyooham-sense.git` (`main`) |
+| Sense MQTT transport | `plain` (`sense_mqtt_transport`: `plain` \| `mtls`) |
 
 ## Install profiles (per device type)
 
@@ -120,9 +122,29 @@ Install resolves the provisioned **DTID** via `GET /admin/device-types` and pick
 | Registry | Profile | On-device | Agent | Runtime deps |
 |----------|---------|-----------|-------|--------------|
 | Family `df_door0001` (or `cap_cam00001`) | **doorbell** | `/etc/doorbell/` | `doorbell-agent` (CI artifact from pi-streamer) | ffmpeg, v4l-utils, go2rtc, motion/ONNX |
+| Family `df_sense` (or `cap_npu00015`) | **sense** | `/etc/vyooham-sense/` | `control-agent` (built from vyooham-sense git on Mac, linux/arm64) | none for control-agent (no camera stack) |
 | Family `df_nvr0001` (or `cap_mcr00012` / `cap_lan00014`) | **nvr** | `/etc/vyooham/` | `control-agent` (built from vyooham-nvr git on Mac, linux/amd64) | none for control-agent (no camera stack) |
 
-Seed types: `dt_wired0001` (doorbell), `dt_nvr0001` (Vyooham NVR v1).
+Seed types: `dt_wired0001` (doorbell), `dt_nvr0001` (Vyooham NVR v1), `dt_sense_v1` (Sense V1).
+
+`cap_npu00015` is checked **before** `cap_lan00014`: `dt_sense_v1` declares both, and
+matching LAN relay first would install a Sense box as an NVR — writing its identity and
+mTLS material to `/etc/vyooham/`, where the Sense agent never looks.
+
+### Sense MQTT transport (`sense_mqtt_transport`)
+
+Sense has no installed base, so it is the one product that could ship on mTLS `8883`
+from day one rather than Phase A's plain `1883`. It currently does **not**, because both
+preconditions are unmet:
+
+1. `mqtt.vyooham.com` has no DNS A record (NXDOMAIN) — the box could not resolve its broker.
+2. auth-service runs without `MQTT_CA_CERT_FILE` / `MQTT_CA_KEY_FILE`, so its `mqttca`
+   signer is nil and provision responses omit `device_crt` / `ca_crt` (both `omitempty`).
+
+Set `"sense_mqtt_transport": "mtls"` in `config.json` to provision
+`ssl://mqtt.vyooham.com:8883` + `MQTT_TLS_ENABLED=true`; flip
+`config.DefaultSenseTransport` to make it the default once both hold. Install **aborts
+before touching the device** if a TLS env would be written without both certs present.
 
 ## Doorbell agent install (CI artifact)
 
@@ -158,7 +180,7 @@ There is no Actions artifact for `control-agent` yet. For the **nvr** profile:
 2. On the Mac, `GOOS=linux GOARCH=amd64 go build` `services/control-agent/cmd/control-agent`.
 3. Over SSH, install binary + embedded systemd unit, write credentials to `/etc/vyooham/`, deploy NVR `agent.env` (MQTT + identity paths only — no camera/GPIO/motion), restart `control-agent`, poll setup `:4444`.
 
-CLI deps-only helper: `go run ./cmd/install-deps --profile=doorbell|nvr`.
+CLI deps-only helper: `go run ./cmd/install-deps --profile=doorbell|nvr|sense`.
 
 ### GitHub token permissions
 

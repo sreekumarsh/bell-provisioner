@@ -18,14 +18,14 @@ type appConfig struct {
 }
 
 func main() {
-	profileFlag := flag.String("profile", "doorbell", "install profile: doorbell | nvr")
+	profileFlag := flag.String("profile", "doorbell", "install profile: doorbell | nvr | sense")
 	flag.Parse()
 
 	profile := device.InstallProfile(*profileFlag)
 	switch profile {
-	case device.ProfileDoorbell, device.ProfileNVR:
+	case device.ProfileDoorbell, device.ProfileNVR, device.ProfileSense:
 	default:
-		fmt.Fprintf(os.Stderr, "unknown --profile %q (use doorbell or nvr)\n", *profileFlag)
+		fmt.Fprintf(os.Stderr, "unknown --profile %q (use doorbell, nvr, or sense)\n", *profileFlag)
 		os.Exit(2)
 	}
 
@@ -56,6 +56,8 @@ func main() {
 	switch profile {
 	case device.ProfileNVR:
 		fmt.Println("NVR profile: no camera OS packages required for control-agent.")
+	case device.ProfileSense:
+		fmt.Println("Sense profile: no camera OS packages required for control-agent.")
 	default:
 		fmt.Println("All doorbell runtime dependencies installed and verified.")
 		fmt.Println("  ffmpeg, v4l-utils, go2rtc, motion venv, yolov8n.onnx, motion-classify.py")

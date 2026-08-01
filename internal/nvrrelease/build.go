@@ -29,6 +29,17 @@ type Bundle struct {
 	ServiceUnit []byte
 }
 
+// BuildOptions configures a control-agent cross-compile.
+type BuildOptions struct {
+	Owner, Repo, Token, Ref string
+	// GOARCH defaults to amd64 (the NVR's x86 box). Sense is RK3566 — arm64.
+	GOARCH string
+	// ServiceUnit is the systemd unit shipped with the binary. Each product
+	// supplies its own because the unit's EnvironmentFile must match the env
+	// path the provisioner writes for that profile.
+	ServiceUnit string
+}
+
 // BuildLatestDefaultTimeout downloads the repo and cross-compiles control-agent.
 func BuildLatestDefaultTimeout(owner, repo, token, ref string) (*Bundle, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -36,13 +47,39 @@ func BuildLatestDefaultTimeout(owner, repo, token, ref string) (*Bundle, error) 
 	return BuildLatest(ctx, owner, repo, token, ref)
 }
 
+// BuildSenseDefaultTimeout builds the Sense control-agent (linux/arm64, RK3566).
+func BuildSenseDefaultTimeout(owner, repo, token, ref string) (*Bundle, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	return Build(ctx, BuildOptions{
+		Owner: owner, Repo: repo, Token: token, Ref: ref,
+		GOARCH:      "arm64",
+		ServiceUnit: SenseControlAgentServiceUnit,
+	})
+}
+
 // BuildLatest fetches owner/repo at ref and builds linux/amd64 control-agent.
 func BuildLatest(ctx context.Context, owner, repo, token, ref string) (*Bundle, error) {
+	return Build(ctx, BuildOptions{Owner: owner, Repo: repo, Token: token, Ref: ref})
+}
+
+// Build fetches the repo at opts.Ref and cross-compiles control-agent.
+func Build(ctx context.Context, opts BuildOptions) (*Bundle, error) {
+	owner, repo, token := opts.Owner, opts.Repo, opts.Token
+	ref := opts.Ref
 	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repo) == "" {
 		return nil, fmt.Errorf("github owner and repo are required")
 	}
 	if strings.TrimSpace(ref) == "" {
 		ref = defaultRef
+	}
+	goarch := strings.TrimSpace(opts.GOARCH)
+	if goarch == "" {
+		goarch = "amd64"
+	}
+	serviceUnit := opts.ServiceUnit
+	if serviceUnit == "" {
+		serviceUnit = ControlAgentServiceUnit
 	}
 	if _, err := exec.LookPath("go"); err != nil {
 		return nil, fmt.Errorf("go toolchain required on Mac to build control-agent: %w", err)
@@ -77,7 +114,7 @@ func BuildLatest(ctx context.Context, owner, repo, token, ref string) (*Bundle, 
 	cmd.Env = append(os.Environ(),
 		"CGO_ENABLED=0",
 		"GOOS=linux",
-		"GOARCH=amd64",
+		"GOARCH="+goarch,
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -91,7 +128,7 @@ func BuildLatest(ctx context.Context, owner, repo, token, ref string) (*Bundle, 
 	return &Bundle{
 		Version:     ref,
 		Binary:      binary,
-		ServiceUnit: []byte(ControlAgentServiceUnit),
+		ServiceUnit: []byte(serviceUnit),
 	}, nil
 }
 
@@ -169,6 +206,30 @@ func extractTarGz(data []byte, dest string) (topDir string, err error) {
 	}
 	return topDir, nil
 }
+
+// SenseControlAgentServiceUnit is the systemd unit deployed with the Sense
+// control-agent. EnvironmentFile must stay in sync with ProfileSense's
+// EtcDir/EnvFileName; it mirrors vyooham-sense's own control-agent.service.
+const SenseControlAgentServiceUnit = `[Unit]
+Description=Vyooham Sense cloud control agent (MQTT control-plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/control-agent
+Restart=always
+RestartSec=3
+User=root
+EnvironmentFile=-/etc/vyooham-sense/control-agent.env
+StandardOutput=journal
+StandardError=journal
+StartLimitBurst=5
+StartLimitIntervalSec=30
+
+[Install]
+WantedBy=multi-user.target
+`
 
 // ControlAgentServiceUnit is the systemd unit deployed with control-agent.
 const ControlAgentServiceUnit = `[Unit]

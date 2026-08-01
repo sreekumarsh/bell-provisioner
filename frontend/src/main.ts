@@ -389,6 +389,11 @@ function resolveInstallProfileLabel(dtid: string): { profile: string; detail: st
   if (t.dfid === 'df_door0001' || caps.includes('cap_cam00001')) {
     return { profile: 'doorbell', detail: `${t.friendly_name} → /etc/doorbell + doorbell-agent + camera deps` };
   }
+  // Sense must be tested before the NVR's cap_lan00014 fallback: dt_sense_v1
+  // carries LAN relay too, and the NVR has no NPU.
+  if (t.dfid === 'df_sense' || caps.includes('cap_npu00015')) {
+    return { profile: 'sense', detail: `${t.friendly_name} → /etc/vyooham-sense + control-agent (no camera deps)` };
+  }
   if (t.dfid === 'df_nvr0001' || caps.includes('cap_mcr00012') || caps.includes('cap_lan00014')) {
     return { profile: 'nvr', detail: `${t.friendly_name} → /etc/vyooham + control-agent (no camera deps)` };
   }

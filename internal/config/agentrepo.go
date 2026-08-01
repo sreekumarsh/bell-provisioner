@@ -8,4 +8,7 @@ const (
 
 	DefaultNvrAgentRepoURL    = "git@github.com:sreekumarsh/vyooham-nvr.git"
 	DefaultNvrAgentRepoBranch = "main"
+
+	DefaultSenseAgentRepoURL    = "git@github.com:sreekumarsh/vyooham-sense.git"
+	DefaultSenseAgentRepoBranch = "main"
 )

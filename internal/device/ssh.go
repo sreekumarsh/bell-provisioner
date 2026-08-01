@@ -34,6 +34,16 @@ type InstallResult struct {
 // to the device etc dir for the given profile and restarts the agent.
 func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, identityJSON, deviceCertPEM, caCertPEM []byte, agentEnvContent string, deployAgentEnv bool, agentOpts AgentInstallOptions) (*InstallResult, error) {
 	spec := profile.Spec()
+
+	// Check before touching the device: a TLS env with no certs is a box that
+	// can never reach the broker, and half-installing it is worse than not
+	// starting.
+	if deployAgentEnv {
+		if err := verifyMTLSMaterial(profile, agentEnvContent, deviceCertPEM, caCertPEM); err != nil {
+			return nil, err
+		}
+	}
+
 	client, err := dialSSH(cfg)
 	if err != nil {
 		return nil, err
@@ -75,14 +85,16 @@ func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, id
 	if err := uploadFile(client, "/tmp/device.key", privateKeyPEM, 0600); err != nil {
 		return nil, fmt.Errorf("upload device.key: %w", err)
 	}
-	if err := uploadFile(client, "/tmp/identity.json", identityJSON, 0644); err != nil {
+	// identity.json carries mqtt_password, so it is 0600 like the key — both
+	// staged 0600 in /tmp too, since /tmp is world-readable.
+	if err := uploadFile(client, "/tmp/identity.json", identityJSON, 0600); err != nil {
 		return nil, fmt.Errorf("upload identity.json: %w", err)
 	}
 
 	installScript := fmt.Sprintf(`
 sudo mkdir -p %s
 sudo install -m 600 -o root -g root /tmp/device.key %s/device.key &&
-sudo install -m 644 -o root -g root /tmp/identity.json %s/identity.json &&
+sudo install -m 600 -o root -g root /tmp/identity.json %s/identity.json &&
 rm -f /tmp/device.key /tmp/identity.json
 `, shellSingleQuote(etcDir), shellSingleQuote(etcDir), shellSingleQuote(etcDir))
 	if len(deviceCertPEM) > 0 {

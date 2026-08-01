@@ -741,9 +741,13 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 	agentEnv := ""
 	if req.DeployAgentEnv {
 		backend := appcfg.BackendProfile(cfg.BackendProfile)
-		if profile == device.ProfileNVR {
+		switch profile {
+		case device.ProfileNVR:
 			agentEnv = appcfg.ControlAgentEnv(backend, cfg.MacIP)
-		} else {
+		case device.ProfileSense:
+			agentEnv = appcfg.SenseControlAgentEnv(backend, cfg.MacIP,
+				appcfg.MQTTTransport(cfg.SenseMQTTTransport))
+		default:
 			agentEnv = appcfg.AgentEnv(backend, cfg.MacIP)
 		}
 	}
@@ -775,6 +779,21 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 				Version:     nvrBundle.Version,
 				Binary:      nvrBundle.Binary,
 				ServiceUnit: nvrBundle.ServiceUnit,
+			}
+		case device.ProfileSense:
+			owner, repo, err := appcfg.GitHubRepo(cfg.SenseAgentRepoURL)
+			if err != nil {
+				return nil, err
+			}
+			// Same repo layout as the NVR's control-agent, but RK3566/arm64.
+			senseBundle, err := nvrrelease.BuildSenseDefaultTimeout(owner, repo, ghToken, cfg.SenseAgentRepoBranch)
+			if err != nil {
+				return nil, fmt.Errorf("build Sense control-agent from git: %w", err)
+			}
+			bundle = &agentrelease.Bundle{
+				Version:     senseBundle.Version,
+				Binary:      senseBundle.Binary,
+				ServiceUnit: senseBundle.ServiceUnit,
 			}
 		default:
 			owner, repo, err := appcfg.GitHubRepo(cfg.AgentRepoURL)

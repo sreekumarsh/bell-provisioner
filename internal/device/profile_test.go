@@ -35,6 +35,48 @@ func TestResolveProfile_capFallback(t *testing.T) {
 	}
 }
 
+func TestResolveProfile_sense(t *testing.T) {
+	p, err := device.ResolveProfile(gateway.DeviceType{DTID: "dt_sense_v1", DFID: device.FamilySense})
+	if err != nil || p != device.ProfileSense {
+		t.Fatalf("sense family: got %q err=%v", p, err)
+	}
+
+	// dt_sense_v1 declares LAN relay as well; NPU must win, or a Sense box gets
+	// installed as an NVR into /etc/vyooham.
+	p, err = device.ResolveProfile(gateway.DeviceType{
+		DTID: "dt_sense_v2", DFID: "df_unknown",
+		Capabilities: []string{device.CapNPU, device.CapLANRelay},
+	})
+	if err != nil || p != device.ProfileSense {
+		t.Fatalf("npu+lan fallback: got %q err=%v", p, err)
+	}
+
+	// An NVR-ish type with LAN relay but no NPU still resolves to NVR.
+	p, err = device.ResolveProfile(gateway.DeviceType{
+		DTID: "dt_nvr_y", DFID: "df_unknown",
+		Capabilities: []string{device.CapLANRelay},
+	})
+	if err != nil || p != device.ProfileNVR {
+		t.Fatalf("lan-only fallback: got %q err=%v", p, err)
+	}
+}
+
+func TestProfileSpec_sensePaths(t *testing.T) {
+	s := device.ProfileSense.Spec()
+	if s.EtcDir != "/etc/vyooham-sense" {
+		t.Errorf("sense EtcDir = %q", s.EtcDir)
+	}
+	if s.EnvFileName != "control-agent.env" {
+		t.Errorf("sense EnvFileName = %q (unit reads control-agent.env)", s.EnvFileName)
+	}
+	if s.ServiceName != "control-agent" || s.BinaryName != "control-agent" || s.CameraDeps {
+		t.Errorf("sense spec: %+v", s)
+	}
+	if s.EtcDir == device.ProfileNVR.Spec().EtcDir {
+		t.Error("sense must not share the NVR's identity dir")
+	}
+}
+
 func TestResolveProfile_unsupported(t *testing.T) {
 	_, err := device.ResolveProfile(gateway.DeviceType{DTID: "dt_x", DFID: "df_other"})
 	if err == nil {
