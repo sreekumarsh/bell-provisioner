@@ -1759,6 +1759,11 @@ async function runDiscover(fullLAN: boolean) {
 
 function buildAppConfig(overrides: Partial<config.AppConfig> = {}): config.AppConfig {
   return config.AppConfig.createFrom({
+    // Carry forward everything the Environment form does not edit — the Sense
+    // repo/transport settings and sense_claim_grant_pub_path live in
+    // config.json only, and rebuilding the struct from state alone would erase
+    // them on every save.
+    ...(savedCfg || {}),
     gateway_url: state.gatewayURL,
     backend_profile: state.backendProfile,
     ssh_user: state.sshUser,

@@ -16,6 +16,10 @@ export namespace config {
 	    agent_artifact_name: string;
 	    nvr_agent_repo_url: string;
 	    nvr_agent_repo_branch: string;
+	    sense_agent_repo_url: string;
+	    sense_agent_repo_branch: string;
+	    sense_mqtt_transport?: string;
+	    sense_claim_grant_pub_path?: string;
 	    access_token?: string;
 	    refresh_token?: string;
 	    token_expires_at?: number;
@@ -41,6 +45,10 @@ export namespace config {
 	        this.agent_artifact_name = source["agent_artifact_name"];
 	        this.nvr_agent_repo_url = source["nvr_agent_repo_url"];
 	        this.nvr_agent_repo_branch = source["nvr_agent_repo_branch"];
+	        this.sense_agent_repo_url = source["sense_agent_repo_url"];
+	        this.sense_agent_repo_branch = source["sense_agent_repo_branch"];
+	        this.sense_mqtt_transport = source["sense_mqtt_transport"];
+	        this.sense_claim_grant_pub_path = source["sense_claim_grant_pub_path"];
 	        this.access_token = source["access_token"];
 	        this.refresh_token = source["refresh_token"];
 	        this.token_expires_at = source["token_expires_at"];

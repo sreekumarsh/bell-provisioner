@@ -719,6 +719,15 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 	}
 	spec := profile.Spec()
 
+	// The backend's grant verify key. auth-service keeps its signing key in KMS
+	// and publishes no public half over the API, so this comes from a local
+	// file the operator points us at. InstallCredentials is what refuses to
+	// ship a profile that needs it and has none.
+	claimGrantPubPEM, err := device.ResolveClaimGrantPub(cfg.SenseClaimGrantPubPath)
+	if err != nil {
+		return nil, err
+	}
+
 	host := req.Host
 	if host == "" {
 		host = cfg.SSHHost
@@ -812,7 +821,7 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 		Port:     port,
 		User:     sshUser,
 		Password: sshPass,
-	}, profile, priv, identity, deviceCrt, caCrt, agentEnv, req.DeployAgentEnv, device.AgentInstallOptions{
+	}, profile, priv, identity, deviceCrt, caCrt, claimGrantPubPEM, agentEnv, req.DeployAgentEnv, device.AgentInstallOptions{
 		Enabled:     checkoutAgentEnabled(req.CheckoutAgent),
 		Bundle:      bundle,
 		BinaryName:  spec.BinaryName,

@@ -203,6 +203,7 @@ IDENTITY_PATH=/etc/vyooham-sense/identity.json
 MQTT_TLS_CA_FILE=/etc/vyooham-sense/ca.crt
 MQTT_TLS_CLIENT_CERT=/etc/vyooham-sense/device.crt
 MQTT_TLS_CLIENT_KEY=/etc/vyooham-sense/device.key
+CLAIM_GRANT_PUBKEY_PATH=/etc/vyooham-sense/claim-grant.pub
 HEARTBEAT_SEC=30
 SETUP_SERVER_PORT=4444
 DETECTOR_ADDR=http://127.0.0.1:9101

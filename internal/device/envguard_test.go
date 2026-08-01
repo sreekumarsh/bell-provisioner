@@ -96,7 +96,7 @@ func TestInstallCredentials_abortsBeforeSSHDial(t *testing.T) {
 	// guard did not short-circuit, this would fail with a network error instead.
 	_, err := InstallCredentials(
 		SSHConfig{Host: "192.0.2.1", Port: 22, User: "root", Password: "x"},
-		ProfileSense, []byte("key"), []byte(`{"device_id":"x"}`), nil, nil,
+		ProfileSense, []byte("key"), []byte(`{"device_id":"x"}`), nil, nil, testClaimGrantPub(t),
 		mtlsEnv, true, AgentInstallOptions{},
 	)
 	if err == nil {

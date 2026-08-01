@@ -30,9 +30,10 @@ type InstallResult struct {
 	Message        string `json:"message"`
 }
 
-// InstallCredentials copies device.key, identity.json, and optional mTLS certs
-// to the device etc dir for the given profile and restarts the agent.
-func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, identityJSON, deviceCertPEM, caCertPEM []byte, agentEnvContent string, deployAgentEnv bool, agentOpts AgentInstallOptions) (*InstallResult, error) {
+// InstallCredentials copies device.key, identity.json, the claim-grant verify
+// key, and optional mTLS certs to the device etc dir for the given profile and
+// restarts the agent.
+func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, identityJSON, deviceCertPEM, caCertPEM, claimGrantPubPEM []byte, agentEnvContent string, deployAgentEnv bool, agentOpts AgentInstallOptions) (*InstallResult, error) {
 	spec := profile.Spec()
 
 	// Check before touching the device: a TLS env with no certs is a box that
@@ -42,6 +43,11 @@ func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, id
 		if err := verifyMTLSMaterial(profile, agentEnvContent, deviceCertPEM, caCertPEM); err != nil {
 			return nil, err
 		}
+	}
+	// Same reasoning for the claim-grant key, but it does not depend on the
+	// env: a Sense box without it installs cleanly and is then unclaimable.
+	if err := verifyClaimGrantMaterial(profile, claimGrantPubPEM); err != nil {
+		return nil, err
 	}
 
 	client, err := dialSSH(cfg)
@@ -114,6 +120,19 @@ rm -f /tmp/device.crt
 sudo install -m 644 -o root -g root /tmp/ca.crt %s/ca.crt &&
 rm -f /tmp/ca.crt
 `, shellSingleQuote(etcDir))
+	}
+	// Installed whenever the backend supplied one, not only for the profiles
+	// that currently require it — camera and NVR gain grant verification later
+	// and having the key already on the box is what makes that a soft cutover.
+	if len(claimGrantPubPEM) > 0 {
+		tmpGrant := "/tmp/" + ClaimGrantFileName
+		if err := uploadFile(client, tmpGrant, claimGrantPubPEM, 0644); err != nil {
+			return nil, fmt.Errorf("upload %s: %w", ClaimGrantFileName, err)
+		}
+		installScript += fmt.Sprintf(`
+sudo install -m %s -o root -g root %s %s/%s &&
+rm -f %s
+`, claimGrantMode, shellSingleQuote(tmpGrant), shellSingleQuote(etcDir), ClaimGrantFileName, shellSingleQuote(tmpGrant))
 	}
 
 	if err := runSudo(client, cfg.Password, installScript); err != nil {

@@ -114,6 +114,7 @@ Saved to `~/Library/Application Support/bell-provisioner/config.json` (`chmod 06
 | NVR agent repo | `git@github.com:sreekumarsh/vyooham-nvr.git` (`main`) |
 | Sense agent repo | `git@github.com:sreekumarsh/vyooham-sense.git` (`main`) |
 | Sense MQTT transport | `plain` (`sense_mqtt_transport`: `plain` \| `mtls`) |
+| Sense claim-grant key (fallback) | unset (`sense_claim_grant_pub_path`, see below) |
 
 ## Install profiles (per device type)
 
@@ -145,6 +146,38 @@ Set `"sense_mqtt_transport": "mtls"` in `config.json` to provision
 `ssl://mqtt.vyooham.com:8883` + `MQTT_TLS_ENABLED=true`; flip
 `config.DefaultSenseTransport` to make it the default once both hold. Install **aborts
 before touching the device** if a TLS env would be written without both certs present.
+
+### Sense claim-grant key (`claim-grant.pub`)
+
+Sense verifies a **cloud-signed claim grant** at `/setup/complete` and accepts nothing
+else ([bell-docs security-hardening.md § Design 5][sec]). control-agent refuses to serve
+the claim flow at all when `/etc/vyooham-sense/claim-grant.pub` is missing — an unclaimed
+box that cannot verify a grant has no way to tell the owner's app from anything else on
+the LAN, so it fails closed rather than trusting what arrives.
+
+That makes the key a **provisioning gate**: a Sense box shipped without it is permanently
+unclaimable. Install therefore aborts before SSH — like the mTLS guard above — when a
+Sense profile has no claim-grant key, or when the key is not a usable PEM bundle.
+
+Set `"sense_claim_grant_pub_path"` in `config.json` to a local PEM file; install writes it
+`0644` next to `identity.json`. It is configured rather than fetched because
+bell-auth-service keeps the signing key in KMS and publishes no public half over its API
+— getting it to the bench is deliberately an out-of-band operator step.
+
+The file must be the public half of the key that service signs with, i.e. the one its
+`CLAIM_GRANT_KID` names: `keys/generate-claim-grant.sh` writes `keys/claim-grant.pub`
+in dev, and production exports it from KMS. A mismatch is silent here and fatal in the
+field — the box installs cleanly and then rejects every grant the backend signs.
+
+The file is a PEM **bundle**: several `PUBLIC KEY` / `RSA PUBLIC KEY` blocks are accepted
+and the device tries each, so a backend signing-key rotation gets an overlap window with
+no device-side change. Keys must be RSA — the device verifies `RSASSA-PKCS1v15/SHA-256`.
+
+Doorbell and NVR are unaffected: they still accept the unsigned `/setup/complete` body
+and need a transition period Sense (no installed base) did not. The key is installed on
+them too whenever the backend supplies one, which is what makes that later cutover soft.
+
+[sec]: https://github.com/sreekumarsh/bell-docs/blob/main/architecture/security-hardening.md
 
 ## Doorbell agent install (CI artifact)
 

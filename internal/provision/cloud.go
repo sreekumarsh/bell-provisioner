@@ -21,6 +21,9 @@ type Result struct {
 	DeviceCrt      string `json:"device_crt,omitempty"`
 	CaCrt          string `json:"ca_crt,omitempty"`
 	ProvisionedAt  string `json:"provisioned_at"`
+	// No claim-grant key here on purpose: bell-auth-service holds the signing
+	// key (KMS in production) and never publishes its public half over the API.
+	// Distributing it is an operator step — see device.ResolveClaimGrantPub.
 }
 
 // APIError carries HTTP status and error code from the gateway/auth.

@@ -30,6 +30,14 @@ type AppConfig struct {
 	// Set to "mtls" only once mqtt.vyooham.com resolves and auth-service issues
 	// device certs — see DefaultSenseTransport.
 	SenseMQTTTransport string `json:"sense_mqtt_transport,omitempty"`
+	// SenseClaimGrantPubPath is a local PEM file holding the public half of
+	// bell-auth-service's claim-grant signing key — the key its CLAIM_GRANT_KID
+	// names. It is configured rather than fetched because auth-service keeps
+	// that key in KMS and publishes no public half over its API, so getting it
+	// to the bench is an out-of-band operator step. Required for Sense: install
+	// aborts without it, since control-agent will not serve the claim flow with
+	// no verify key.
+	SenseClaimGrantPubPath string `json:"sense_claim_grant_pub_path,omitempty"`
 
 	AccessToken        string `json:"access_token,omitempty"`
 	RefreshToken       string `json:"refresh_token,omitempty"`
