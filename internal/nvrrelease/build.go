@@ -172,13 +172,20 @@ func extractTarGz(data []byte, dest string) (topDir string, err error) {
 		if err != nil {
 			return "", err
 		}
+		// GitHub repo tarballs often lead with a PAX global header entry named
+		// "pax_global_header". That must not become the extracted top directory.
+		if hdr.Typeflag == tar.TypeXHeader || hdr.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		name := hdr.Name
-		if name == "" || strings.Contains(name, "..") {
+		if name == "" || strings.Contains(name, "..") || isTarMetaName(name) {
 			continue
 		}
 		if topDir == "" {
 			parts := strings.SplitN(name, "/", 2)
-			topDir = parts[0]
+			if parts[0] != "" && !isTarMetaName(parts[0]) {
+				topDir = parts[0]
+			}
 		}
 		target := filepath.Join(dest, name)
 		switch hdr.Typeflag {
@@ -186,7 +193,7 @@ func extractTarGz(data []byte, dest string) (topDir string, err error) {
 			if err := os.MkdirAll(target, 0755); err != nil {
 				return "", err
 			}
-		case tar.TypeReg:
+		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return "", err
 			}
@@ -205,6 +212,16 @@ func extractTarGz(data []byte, dest string) (topDir string, err error) {
 		return "", fmt.Errorf("empty tarball")
 	}
 	return topDir, nil
+}
+
+// isTarMetaName reports archive metadata entries that are not part of the repo tree.
+func isTarMetaName(name string) bool {
+	base := strings.TrimSuffix(strings.TrimPrefix(name, "./"), "/")
+	switch base {
+	case "pax_global_header", "PaxHeader", ".git":
+		return true
+	}
+	return strings.HasPrefix(base, "PaxHeader/")
 }
 
 // SenseControlAgentServiceUnit is the systemd unit deployed with the Sense

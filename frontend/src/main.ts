@@ -413,13 +413,17 @@ function renderInstall(): string {
     </div>
   ` : '';
 
-  const isNvr = installProfile?.profile === 'nvr';
-  const checkoutLabel = isNvr
-    ? 'Build latest control-agent from vyooham-nvr git and install on device'
-    : 'Download latest CI doorbell-agent build and install on device';
-  const envLabel = isNvr
-    ? `Deploy /etc/vyooham/agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}`
-    : `Deploy /etc/doorbell/agent.env for ${state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS'}`;
+  const profile = installProfile?.profile;
+  const backendLabel = state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS';
+  let checkoutLabel = 'Download latest CI doorbell-agent build and install on device';
+  let envLabel = `Deploy /etc/doorbell/agent.env for ${backendLabel}`;
+  if (profile === 'nvr') {
+    checkoutLabel = 'Build latest control-agent from vyooham-nvr git and install on device';
+    envLabel = `Deploy /etc/vyooham/agent.env for ${backendLabel}`;
+  } else if (profile === 'sense') {
+    checkoutLabel = 'Build latest control-agent from vyooham-sense git and install on device';
+    envLabel = `Deploy /etc/vyooham-sense/control-agent.env for ${backendLabel} (mTLS 8883)`;
+  }
 
   return `
     <div class="panel-toolbar">
@@ -1672,11 +1676,11 @@ async function doInstall() {
       checkout_agent: state.checkoutAgent,
       github_token: gh,
     });
-    const isNvr = result.profile === 'nvr';
-    const depsOk = isNvr || (result.ffmpeg_ok && result.go2rtc_ok && result.motion_ok);
+    const noCameraDeps = result.profile === 'nvr' || result.profile === 'sense';
+    const depsOk = noCameraDeps || (result.ffmpeg_ok && result.go2rtc_ok && result.motion_ok);
     const suffix = [
       result.profile ? `profile ${result.profile}` : '',
-      isNvr ? '' : (depsOk ? 'deps OK' : ''),
+      noCameraDeps ? '' : (depsOk ? 'deps OK' : ''),
       result.setup_server_ok ? 'Setup mode (:4444)' : '',
       result.agent_active ? 'Agent active' : '',
     ].filter(Boolean).join(' · ');
@@ -1773,10 +1777,12 @@ function buildAppConfig(overrides: Partial<config.AppConfig> = {}): config.AppCo
     phone: state.phone,
     github_token: state.githubToken,
     ssh_password: state.sshPassword,
-    agent_repo_url: savedCfg?.agent_repo_url || 'git@github.com:sreekumarsh/pi-streamer.git',
+    agent_repo_url: savedCfg?.agent_repo_url || 'git@github.com:vyooham/pi-streamer.git',
     agent_repo_branch: savedCfg?.agent_repo_branch || 'main',
     agent_repo_path: savedCfg?.agent_repo_path || '',
     agent_artifact_name: savedCfg?.agent_artifact_name || 'doorbell-agent-linux-arm64',
+    nvr_agent_repo_url: savedCfg?.nvr_agent_repo_url || 'git@github.com:vyooham/vyooham-nvr.git',
+    sense_agent_repo_url: savedCfg?.sense_agent_repo_url || 'git@github.com:vyooham/vyooham-sense.git',
     ...overrides,
   });
 }

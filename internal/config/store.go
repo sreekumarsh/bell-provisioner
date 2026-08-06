@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // AppConfig is persisted user preferences. github_token is stored locally (chmod 0600).
@@ -26,9 +27,7 @@ type AppConfig struct {
 
 	SenseAgentRepoURL    string `json:"sense_agent_repo_url"`
 	SenseAgentRepoBranch string `json:"sense_agent_repo_branch"`
-	// SenseMQTTTransport is "plain" or "mtls"; empty means DefaultSenseTransport.
-	// Set to "mtls" only once mqtt.vyooham.com resolves and auth-service issues
-	// device certs — see DefaultSenseTransport.
+	// SenseMQTTTransport is "plain" or "mtls"; empty means DefaultSenseTransport (mtls).
 	SenseMQTTTransport string `json:"sense_mqtt_transport,omitempty"`
 	// SenseClaimGrantPubPath is a local PEM file holding the public half of
 	// bell-auth-service's claim-grant signing key — the key its CLAIM_GRANT_KID
@@ -93,32 +92,53 @@ func Load() AppConfig {
 	if cfg.BackendProfile == "" {
 		cfg.BackendProfile = string(ProfileVPS)
 	}
-	if cfg.AgentRepoURL == "" {
-		cfg.AgentRepoURL = DefaultAgentRepoURL
-	}
 	if cfg.AgentRepoBranch == "" {
 		cfg.AgentRepoBranch = DefaultAgentRepoBranch
 	}
 	if cfg.AgentArtifactName == "" {
 		cfg.AgentArtifactName = DefaultAgentArtifactName
 	}
-	if cfg.NvrAgentRepoURL == "" {
-		cfg.NvrAgentRepoURL = DefaultNvrAgentRepoURL
-	}
 	if cfg.NvrAgentRepoBranch == "" {
 		cfg.NvrAgentRepoBranch = DefaultNvrAgentRepoBranch
-	}
-	if cfg.SenseAgentRepoURL == "" {
-		cfg.SenseAgentRepoURL = DefaultSenseAgentRepoURL
 	}
 	if cfg.SenseAgentRepoBranch == "" {
 		cfg.SenseAgentRepoBranch = DefaultSenseAgentRepoBranch
 	}
+	NormalizeRepos(&cfg)
 	return cfg
+}
+
+// NormalizeRepos fills empty agent-repo fields and rewrites known-stale
+// sreekumarsh/* remotes to the vyooham org (vyooham-sense never existed under
+// sreekumarsh — GitHub API 404).
+func NormalizeRepos(cfg *AppConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.AgentRepoURL = migrateAgentRepoURL(cfg.AgentRepoURL, "pi-streamer", DefaultAgentRepoURL)
+	cfg.NvrAgentRepoURL = migrateAgentRepoURL(cfg.NvrAgentRepoURL, "vyooham-nvr", DefaultNvrAgentRepoURL)
+	cfg.SenseAgentRepoURL = migrateAgentRepoURL(cfg.SenseAgentRepoURL, "vyooham-sense", DefaultSenseAgentRepoURL)
+}
+
+// migrateAgentRepoURL fills empty URLs and rewrites known-stale sreekumarsh
+// remotes to the vyooham org defaults.
+func migrateAgentRepoURL(url, repoName, defaultURL string) string {
+	if strings.TrimSpace(url) == "" {
+		return defaultURL
+	}
+	owner, repo, err := GitHubRepo(url)
+	if err != nil {
+		return url
+	}
+	if repo == repoName && owner == "sreekumarsh" {
+		return defaultURL
+	}
+	return url
 }
 
 // Save persists config to disk.
 func Save(cfg AppConfig) error {
+	NormalizeRepos(&cfg)
 	path, err := configPath()
 	if err != nil {
 		return err

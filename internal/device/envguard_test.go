@@ -80,10 +80,10 @@ func TestVerifyMTLSMaterial_matchesGeneratedSenseEnv(t *testing.T) {
 		t.Fatalf("generated plain Sense env needs no certs: %v", err)
 	}
 
-	// The shipped default must never require certs the backend can't issue yet.
+	// Default Sense transport is mTLS — install must refuse without certs.
 	defEnv := config.SenseControlAgentEnv(config.ProfileVPS, "", "")
-	if err := verifyMTLSMaterial(ProfileSense, defEnv, nil, nil); err != nil {
-		t.Fatalf("DefaultSenseTransport must install cleanly with no certs: %v", err)
+	if err := verifyMTLSMaterial(ProfileSense, defEnv, nil, nil); err == nil {
+		t.Fatal("DefaultSenseTransport (mtls) must refuse without device_crt/ca_crt")
 	}
 }
 

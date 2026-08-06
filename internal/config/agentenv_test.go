@@ -33,6 +33,8 @@ func TestSenseControlAgentEnv_paths(t *testing.T) {
 		"MQTT_TLS_CA_FILE=/etc/vyooham-sense/ca.crt",
 		"MQTT_TLS_CLIENT_CERT=/etc/vyooham-sense/device.crt",
 		"MQTT_TLS_CLIENT_KEY=/etc/vyooham-sense/device.key",
+		"CLAIM_GRANT_PUBKEY_PATH=/etc/vyooham-sense/claim-grant.pub",
+		"API_GATEWAY_URL=https://api.vyooham.com",
 		"HEARTBEAT_SEC=30",
 		"SETUP_SERVER_PORT=4444",
 		"EVENT_INGEST_ADDR=127.0.0.1:9105",
@@ -51,17 +53,17 @@ func TestSenseControlAgentEnv_paths(t *testing.T) {
 }
 
 func TestSenseControlAgentEnv_transport(t *testing.T) {
-	// Default is plain until the mTLS preconditions hold.
+	// Default is mTLS — public 1883 is closed.
 	def := config.SenseControlAgentEnv(config.ProfileVPS, "", "")
-	if !strings.Contains(def, "MQTT_BROKER_URL=tcp://api.vyooham.com:1883") ||
-		!strings.Contains(def, "MQTT_TLS_ENABLED=false") {
-		t.Fatalf("default transport should be plain 1883, got:\n%s", def)
+	if !strings.Contains(def, "MQTT_BROKER_URL=ssl://mqtt.vyooham.com:8883") ||
+		!strings.Contains(def, "MQTT_TLS_ENABLED=true") {
+		t.Fatalf("default transport should be ssl 8883, got:\n%s", def)
 	}
 
-	mtls := config.SenseControlAgentEnv(config.ProfileVPS, "", config.MQTTMutualTLS)
-	if !strings.Contains(mtls, "MQTT_BROKER_URL=ssl://mqtt.vyooham.com:8883") ||
-		!strings.Contains(mtls, "MQTT_TLS_ENABLED=true") {
-		t.Fatalf("mtls transport should be ssl 8883, got:\n%s", mtls)
+	plain := config.SenseControlAgentEnv(config.ProfileVPS, "", config.MQTTPlain)
+	if !strings.Contains(plain, "MQTT_BROKER_URL=tcp://api.vyooham.com:1883") ||
+		!strings.Contains(plain, "MQTT_TLS_ENABLED=false") {
+		t.Fatalf("plain transport should be tcp 1883, got:\n%s", plain)
 	}
 
 	// Mac LAN dev broker has no CA — always plain, even if mtls is asked for.

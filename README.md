@@ -23,8 +23,8 @@ Mac utility for factory/lab device provisioning. After **admin login**, the dash
 - API gateway with admin routes deployed (`POST /admin/devices/provision`, `GET /admin/device-types`)
 - Operator account with `role=admin` in `auth.users` (or listed in gateway `ADMIN_USER_IDS`)
 - **Device registry applied** on the target environment before the first v2 unit (see below)
-- **pi-streamer** [Agent workflow](https://github.com/sreekumarsh/pi-streamer/blob/main/.github/workflows/agent.yml) has run on `main` (publishes the `doorbell-agent-linux-arm64` artifact)
-- Read-only **GitHub token** with access to `sreekumarsh/pi-streamer` and Actions artifacts
+- **pi-streamer** [Agent workflow](https://github.com/vyooham/pi-streamer/blob/main/.github/workflows/agent.yml) has run on `main` (publishes the `doorbell-agent-linux-arm64` artifact)
+- Read-only **GitHub token** with access to `vyooham/pi-streamer` (and Sense/NVR repos) and Actions artifacts
 
 ### Registry before first v2 unit
 
@@ -109,11 +109,11 @@ Saved to `~/Library/Application Support/bell-provisioner/config.json` (`chmod 06
 | Gateway URL | `https://api.vyooham.com` |
 | Backend profile | VPS |
 | SSH | `pi@raspberrypi.local:22` |
-| Agent repo (doorbell) | `git@github.com:sreekumarsh/pi-streamer.git` |
+| Agent repo (doorbell) | `git@github.com:vyooham/pi-streamer.git` |
 | Agent artifact (doorbell) | `doorbell-agent-linux-arm64` |
-| NVR agent repo | `git@github.com:sreekumarsh/vyooham-nvr.git` (`main`) |
-| Sense agent repo | `git@github.com:sreekumarsh/vyooham-sense.git` (`main`) |
-| Sense MQTT transport | `plain` (`sense_mqtt_transport`: `plain` \| `mtls`) |
+| NVR agent repo | `git@github.com:vyooham/vyooham-nvr.git` (`main`) |
+| Sense agent repo | `git@github.com:vyooham/vyooham-sense.git` (`main`) |
+| Sense MQTT transport | `mtls` (`sense_mqtt_transport`: `plain` \| `mtls`) |
 | Sense claim-grant key (fallback) | unset (`sense_claim_grant_pub_path`, see below) |
 
 ## Install profiles (per device type)
@@ -134,18 +134,14 @@ mTLS material to `/etc/vyooham/`, where the Sense agent never looks.
 
 ### Sense MQTT transport (`sense_mqtt_transport`)
 
-Sense has no installed base, so it is the one product that could ship on mTLS `8883`
-from day one rather than Phase A's plain `1883`. It currently does **not**, because both
-preconditions are unmet:
+Sense defaults to mTLS on `ssl://mqtt.vyooham.com:8883` (`MQTT_TLS_ENABLED=true`).
+Public plain `1883` is closed; `mqtt.vyooham.com` resolves to the VPS. Install
+**aborts before touching the device** if a TLS env would be written without
+`device_crt` / `ca_crt` from auth-service (`MQTT_CA_CERT_FILE` / `MQTT_CA_KEY_FILE`).
 
-1. `mqtt.vyooham.com` has no DNS A record (NXDOMAIN) — the box could not resolve its broker.
-2. auth-service runs without `MQTT_CA_CERT_FILE` / `MQTT_CA_KEY_FILE`, so its `mqttca`
-   signer is nil and provision responses omit `device_crt` / `ca_crt` (both `omitempty`).
-
-Set `"sense_mqtt_transport": "mtls"` in `config.json` to provision
-`ssl://mqtt.vyooham.com:8883` + `MQTT_TLS_ENABLED=true`; flip
-`config.DefaultSenseTransport` to make it the default once both hold. Install **aborts
-before touching the device** if a TLS env would be written without both certs present.
+Set `"sense_mqtt_transport": "plain"` only for Mac LAN / lab brokers that still
+speak `1883`. The MQTT verify step uses the same transport and presents the
+provisioned client cert when transport is `mtls`.
 
 ### Sense claim-grant key (`claim-grant.pub`)
 
@@ -219,7 +215,7 @@ CLI deps-only helper: `go run ./cmd/install-deps --profile=doorbell|nvr|sense`.
 
 **Fine-grained PAT** (recommended):
 
-- Repositories: `sreekumarsh/pi-streamer` and `sreekumarsh/vyooham-nvr`
+- Repositories: `vyooham/pi-streamer`, `vyooham/vyooham-nvr`, `vyooham/vyooham-sense`
 - **Contents:** Read-only
 - **Actions:** Read-only (doorbell CI artifacts)
 
@@ -229,8 +225,9 @@ Paste in **Environment → GitHub token** (stored in `config.json` when you cont
 
 ## Related docs
 
-- [pi-streamer Agent workflow](https://github.com/sreekumarsh/pi-streamer/blob/main/.github/workflows/agent.yml)
-- [vyooham-nvr control-agent](https://github.com/sreekumarsh/vyooham-nvr/blob/main/services/control-agent/README.md) — NVR identity path `/etc/vyooham/`
+- [pi-streamer Agent workflow](https://github.com/vyooham/pi-streamer/blob/main/.github/workflows/agent.yml)
+- [vyooham-nvr control-agent](https://github.com/vyooham/vyooham-nvr/blob/main/services/control-agent/README.md) — NVR identity path `/etc/vyooham/`
+- [vyooham-sense control-agent](https://github.com/vyooham/vyooham-sense/blob/main/services/control-agent/README.md) — Sense identity path `/etc/vyooham-sense/`
 - [device-types-and-capabilities.md](https://github.com/sreekumarsh/bell-docs/blob/main/architecture/device-types-and-capabilities.md) — v2 IDs and provision flow
 - [go-agent.md § identity.json](https://github.com/sreekumarsh/bell-docs/blob/main/firmware/go-agent.md) — on-device identity format
 - [provisioning-utility.md](https://github.com/sreekumarsh/bell-docs/blob/main/operations/provisioning-utility.md) — operator guide

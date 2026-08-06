@@ -69,6 +69,7 @@ func (a *App) GetConfig() appcfg.AppConfig {
 
 // SaveConfig persists environment settings.
 func (a *App) SaveConfig(cfg appcfg.AppConfig) error {
+	appcfg.NormalizeRepos(&cfg)
 	a.mu.Lock()
 	a.cfg = cfg
 	a.mu.Unlock()
@@ -858,12 +859,67 @@ func (a *App) Verify(req VerifyRequest) *VerifyResult {
 		mqttPass = a.pendingMQTTPass
 	}
 	cfg := a.cfg
+	identity := append([]byte(nil), a.pendingIdentity...)
+	deviceCrt := append([]byte(nil), a.pendingDeviceCrt...)
+	caCrt := append([]byte(nil), a.pendingCaCrt...)
+	priv := append([]byte(nil), a.pendingPrivateKey...)
 	a.mu.Unlock()
 
-	broker := appcfg.MQTTBrokerURL(appcfg.BackendProfile(cfg.BackendProfile), cfg.MacIP)
-	mqttResult := verify.TestMQTTConnection(broker, mqttUser, mqttPass, deviceID)
+	backend := appcfg.BackendProfile(cfg.BackendProfile)
+	transport := appcfg.MQTTPlain
+	var tlsMat *verify.TLSMaterial
+
+	// Sense (and only Sense) follows sense_mqtt_transport — default mTLS on 8883.
+	if isSensePending(a, identity) {
+		transport = appcfg.MQTTTransport(cfg.SenseMQTTTransport)
+		if transport == "" {
+			transport = appcfg.DefaultSenseTransport
+		}
+		if transport == appcfg.MQTTMutualTLS && backend != appcfg.ProfileMacLAN {
+			tlsMat = &verify.TLSMaterial{
+				CertPEM: deviceCrt,
+				KeyPEM:  priv,
+				CAPEM:   caCrt,
+			}
+		}
+	}
+
+	broker := appcfg.MQTTBrokerURLFor(backend, cfg.MacIP, transport)
+	mqttResult := verify.TestMQTTConnection(broker, mqttUser, mqttPass, deviceID, tlsMat)
 
 	return &VerifyResult{MQTT: *mqttResult}
+}
+
+// isSensePending reports whether the pending provision is a Sense box.
+func isSensePending(a *App, identity []byte) bool {
+	if len(identity) == 0 {
+		return false
+	}
+	id, err := device.ParseIdentity(identity)
+	if err != nil {
+		return false
+	}
+	dtid := strings.TrimSpace(id.DTID)
+	if dtid == "dt_sense_v1" || strings.HasPrefix(dtid, "dt_sense") {
+		return true
+	}
+	if err := a.ensureFreshToken(); err != nil {
+		return false
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return false
+	}
+	types, err := client.ListDeviceTypes()
+	if err != nil {
+		return false
+	}
+	dt, err := device.FindDeviceType(types, id.DTID)
+	if err != nil {
+		return false
+	}
+	profile, err := device.ResolveProfile(dt)
+	return err == nil && profile == device.ProfileSense
 }
 
 // TestSSH checks SSH connectivity to the selected host.
