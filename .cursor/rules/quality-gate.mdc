@@ -1,0 +1,58 @@
+---
+description: Before done — Bugbot, tests, coverage; after push — GHA, deploy, verify
+alwaysApply: true
+---
+
+# Quality gate (bell-provisioner)
+
+After **any change** in this repo, complete this workflow before calling the task done.
+Do not skip steps unless the user explicitly opts out.
+
+## 1. Bugbot review
+
+Launch exactly one `bugbot` subagent (`run_in_background: false`, `subagent_type: "bugbot"`) with:
+
+```text
+Full Repository Path: ~/Workspace/bell-provisioner
+Diff: uncommitted changes
+```
+
+Use `branch changes` instead if the work is already committed and there is nothing unstaged.
+
+- Summarize findings (severity, file:line, issue).
+- Fix every valid finding **in this repo**.
+- Re-run Bugbot after fixes until it reports no issues, or the user explicitly accepts remaining items.
+
+## 2. Unit tests
+
+- Add or update **unit tests** for every changed behavior, bug fix, and new code path.
+- Discover this repo's test command from `Makefile`, `package.json`, `go test`, `pytest`, CI config, or README — then run it.
+- All tests must pass. Do not call the task done with failing or missing tests for touched logic.
+
+## 3. Coverage gaps
+
+- Run this repo's coverage command when one exists (`test:coverage`, `go test -coverprofile`, `pytest --cov`, `xcodebuild test` + coverage, etc.).
+- Focus on **files and branches you changed**. Close gaps: happy path, errors, edge cases, regressions.
+- If no coverage tooling exists, still add tests for the changed surface and note the tooling gap briefly.
+
+## 4. Push, CI, deploy, and verification
+
+When changes are pushed (or the user asks you to push):
+
+1. Push the branch/commit to the remote.
+2. Use `gh` to watch GitHub Actions on the pushed ref until **all CI workflows pass** (`gh run list`, `gh run watch`, or `gh pr checks` for PRs). Inspect `.github/workflows/` for workflow names (e.g. `ci.yml`, `agent.yml`, `bake.yml`).
+3. If any workflow **deploys** (e.g. `deploy*.yml`, `deploy-vps.yml`, `deploy.yml`), wait for that job to **finish successfully** — not just start.
+4. **Verify the change landed**: hit health/smoke checks, exercise the changed API/UI/path, or follow README/deploy docs for post-deploy verification. Confirm the fix or feature works in the target environment (staging/prod/device as appropriate).
+5. If CI/deploy fails, fix in this repo, re-push, and repeat from step 2.
+6. If this repo has no GHA or deploy pipelines, say so briefly and confirm the user’s intended verification path.
+
+Do not call the task done while CI is failing, a deploy is in progress/failed, or the change has not been verified post-deploy.
+
+## 5. Done criteria
+
+Only mark work complete when:
+
+1. Bugbot is clean (or user waived specific items in writing)
+2. Unit tests pass
+3. Changed behavior is covered; no obvious coverage gaps in touched code
+4. If pushed: GHA green, deploy succeeded (when applicable), and changes verified in the target environment

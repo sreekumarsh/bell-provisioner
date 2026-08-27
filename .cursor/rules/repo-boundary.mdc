@@ -1,13 +1,49 @@
 ---
-description: Only edit files in this repository
+description: Never edit sibling repos; hand off with a verify-first agent prompt
 alwaysApply: true
 ---
 
-# Repository boundary
+# Repository boundary (bell-provisioner)
 
-- Only create, edit, or delete files under **this repository’s root directory** (`bell-provisioner/`).
-- Do **not** modify sibling Bell repos (`bell-api-gateway`, `bell-auth-service`,
-  `bell-device-management-service`, `bell-event-service`, `bell-stream-service`,
-  `bell-web-app`, `pi-streamer`, `bell-docs`) unless the open workspace **is** that repo.
-- If a task spans services, implement in the **owning** repo first; update `bell-docs` only when
-  explicitly asked or in a follow-up focused on documentation.
+This workspace is **`bell-provisioner`** only.
+
+## Hard limits
+
+- Only create, edit, or delete files under **this repository’s root** (`bell-provisioner/`).
+- Do **not** modify any other Vyooham/Bell repo under `~/Workspace/` (`bell-*`, `pi-streamer`, `pi-voice-chat`, `vyooham-*`), even if those folders are visible in a multi-root workspace.
+- Do not patch another repo to unblock work here.
+
+## When another repo must change
+
+1. Finish or clearly scope the work that belongs **in `bell-provisioner`**.
+2. Tell the user which **owning repo** needs changes and why (one short paragraph).
+3. Immediately show a **ready-to-paste prompt** for an agent opened on that repo. Do not make the user re-explain from scratch.
+4. Stop cross-repo edits. Wait for the user to run that prompt in the other repo’s session.
+
+### Handoff prompt template (fill and show verbatim)
+
+The prompt must instruct the receiving agent to **verify against code first** — do not jump into edits.
+
+```text
+Repo: <owning-repo-name>
+Path: ~/Workspace/<owning-repo-name>
+
+Context:
+- Coming from work in `bell-provisioner`.
+- Goal: <one sentence>
+
+Proposed changes (hypothesis — not approved yet):
+- <concrete bullets: files/areas, behavior, APIs/contracts>
+
+Acceptance criteria:
+- <how we would know it worked>
+
+Instructions (mandatory order):
+1. Do NOT edit code yet.
+2. Read the relevant code/docs in this repo and verify the proposal against reality.
+3. Respond with one of:
+   A) VERDICT: ALIGNED — summarize what matches, what you would change, and wait for explicit go-ahead before editing.
+   B) GAPS / QUESTIONS — list mismatches, missing context, risks, and clarifying questions. Do not start implementation until answered.
+4. Stay inside this repository only. Do not modify sibling repos.
+5. If docs/contracts also need updating, note a separate `bell-docs` follow-up — do not do it here unless this is `bell-docs`.
+```
