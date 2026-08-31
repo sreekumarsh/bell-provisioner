@@ -4,6 +4,7 @@ Mac utility for factory/lab device provisioning. After **admin login**, the dash
 
 - **Device registry** — manage capabilities, families, and device types via gateway `/admin/*` routes
 - **Start provisioning** — guided flow: environment → LAN discovery → cloud provision (v2) → SSH install + MQTT verify
+- **UART provisioning** — serial @ 115200 → cloud provision → credentials-only install over UART getty (any profile; agent baked in the OS image; no LAN Discover)
 
 ## Flow
 
@@ -13,8 +14,9 @@ Mac utility for factory/lab device provisioning. After **admin login**, the dash
    - **Environment** — VPS vs Mac LAN backend, SSH target, GitHub token
    - **Discover** — mDNS / subnet scan / manual IP
    - **Provision (v2)** — select **DTID** + factory **device_id**, then `POST /admin/devices/provision`
-   - **Install + verify** — resolve install profile from DTID (doorbell vs NVR), deploy matching agent + deps, MQTT smoke test
-4. **Registry** (from dashboard) — `GET/POST/PATCH /admin/capabilities`, `/admin/device-families`, `/admin/device-types`, and `POST /admin/device-registry/apply`
+   - **Install + verify** — resolve install profile from DTID (doorbell vs NVR vs Sense), deploy credentials (+ agent for doorbell/NVR), MQTT smoke test
+4. **UART** (from dashboard) — Environment (serial port + optional root password) → Provision → Install over UART (credentials only; claim-grant path required for Sense DTIDs)
+5. **Registry** (from dashboard) — `GET/POST/PATCH /admin/capabilities`, `/admin/device-families`, `/admin/device-types`, and `POST /admin/device-registry/apply`
 
 ## Prerequisites
 
@@ -123,7 +125,7 @@ Install resolves the provisioned **DTID** via `GET /admin/device-types` and pick
 | Registry | Profile | On-device | Agent | Runtime deps |
 |----------|---------|-----------|-------|--------------|
 | Family `df_door0001` (or `cap_cam00001`) | **doorbell** | `/etc/doorbell/` | `doorbell-agent` (CI artifact from pi-streamer) | ffmpeg, v4l-utils, go2rtc, motion/ONNX |
-| Family `df_sense` (or `cap_npu00015`) | **sense** | `/etc/vyooham-sense/` | `control-agent` (built from vyooham-sense git on Mac, linux/arm64) | none for control-agent (no camera stack) |
+| Family `df_sense` (or `cap_npu00015`) | **sense** | `/etc/vyooham-sense/` | `control-agent` (baked in Yocto image; provisioner does not upload) | none for control-agent (no camera stack) |
 | Family `df_nvr0001` (or `cap_mcr00012` / `cap_lan00014`) | **nvr** | `/etc/vyooham/` | `control-agent` (built from vyooham-nvr git on Mac, linux/amd64) | none for control-agent (no camera stack) |
 
 Seed types: `dt_wired0001` (doorbell), `dt_nvr0001` (Vyooham NVR v1), `dt_sense_v1` (Sense V1).
@@ -237,5 +239,5 @@ Paste in **Environment → GitHub token** (stored in `config.json` when you cont
 ## Future
 
 - v2.1: factory HTTP endpoint on device (no SSH)
-- v3: USB credential pipe
+- v3: USB credential pipe (UART credentials path ships first for Sense)
 - Switch NVR install to CI artifacts once vyooham-nvr publishes them (same pattern as doorbell)

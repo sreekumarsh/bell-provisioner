@@ -15,7 +15,7 @@ func InstallRuntimeDeps(cfg SSHConfig, profile InstallProfile) error {
 	case ProfileNVR, ProfileSense:
 		return nil
 	case ProfileDoorbell, "":
-		if err := installDoorbellRuntimeDeps(client, cfg.Password); err != nil {
+		if err := installDoorbellRuntimeDeps(client, cfg.User, cfg.Password); err != nil {
 			return err
 		}
 		ffmpegOK, go2rtcOK, motionOK := verifyDoorbellRuntimeDeps(client)

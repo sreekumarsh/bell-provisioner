@@ -24,13 +24,16 @@ import {
   PatchPlan,
   Provision,
   Install,
+  InstallUART,
+  ListSerialPorts,
   Verify,
   TestSSH,
 } from '../wailsjs/go/main/App';
 import { config } from '../wailsjs/go/models';
-import type { gateway, main } from '../wailsjs/go/models';
+import type { device, gateway, main } from '../wailsjs/go/models';
 
 type View = 'login' | 'dashboard' | 'provision' | 'registry' | 'subscriptions';
+type ProvisionTransport = 'ssh' | 'uart';
 type ProvisionStep = 1 | 2 | 3 | 4;
 type RegistryTab = 'capabilities' | 'families' | 'types';
 type SubscriptionsTab = 'entitlements' | 'plans';
@@ -51,14 +54,21 @@ const ENTITLEMENT_UNITS: { value: string; label: string }[] = [
   { value: 'kbps', label: 'Kbps' },
 ];
 
-const provisionLabels = ['Environment', 'Discover', 'Provision', 'Install'];
+function provisionLabelsFor(transport: ProvisionTransport): string[] {
+  if (transport === 'uart') {
+    return ['Environment', 'Provision', 'Install'];
+  }
+  return ['Environment', 'Discover', 'Provision', 'Install'];
+}
 
 let view: View = 'login';
+let provisionTransport: ProvisionTransport = 'ssh';
 let provisionStep: ProvisionStep = 1;
 let registryTab: RegistryTab = 'types';
 let subscriptionsTab: SubscriptionsTab = 'entitlements';
 let loginUser: main.LoginResult | null = null;
 let selectedHost = '';
+let serialPorts: device.SerialPortInfo[] = [];
 let provisionResult: main.ProvisionResult | null = null;
 let savedCfg: config.AppConfig | null = null;
 
@@ -85,6 +95,9 @@ const state = {
   phone: '',
   password: '',
   sshPassword: '',
+  uartPort: '',
+  uartPassword: '',
+  senseClaimGrantPubPath: '',
   dtid: '',
   factoryDeviceID: '',
   serial: '',
@@ -109,6 +122,8 @@ async function init() {
     state.phone = cfg.phone || '';
     state.githubToken = cfg.github_token || '';
     state.sshPassword = cfg.ssh_password || '';
+    state.uartPort = cfg.uart_port || '';
+    state.senseClaimGrantPubPath = cfg.sense_claim_grant_pub_path || '';
   } catch (e) {
     console.error(e);
   }
@@ -159,7 +174,8 @@ function renderHeaderActions(): string {
 }
 
 function renderProvisionSteps(): string {
-  return `<div class="steps">${provisionLabels.map((label, i) => {
+  const labels = provisionLabelsFor(provisionTransport);
+  return `<div class="steps">${labels.map((label, i) => {
     const n = (i + 1) as ProvisionStep;
     let cls = 'step-indicator';
     if (n === provisionStep) cls += ' active';
@@ -194,6 +210,14 @@ function renderPanel(): string {
     case 'login': return renderLogin();
     case 'dashboard': return renderDashboard();
     case 'provision':
+      if (provisionTransport === 'uart') {
+        switch (provisionStep) {
+          case 1: return renderUARTEnv();
+          case 2: return renderProvision();
+          case 3: return renderUARTInstall();
+          default: return renderUARTInstall();
+        }
+      }
       switch (provisionStep) {
         case 1: return renderEnv();
         case 2: return renderDiscover();
@@ -226,8 +250,8 @@ function renderLogin(): string {
       <input id="gatewayURL" value="${esc(state.gatewayURL)}" placeholder="https://api.vyooham.com" />
     </div>
     <div class="field">
-      <label>Phone (+country code)</label>
-      <input id="phone" value="${esc(state.phone)}" placeholder="+919876543210" />
+      <label>Phone or email</label>
+      <input id="phone" value="${esc(state.phone)}" placeholder="+919876543210 or admin@vyooham.com" />
     </div>
     <div class="field">
       <label>Password</label>
@@ -247,7 +271,11 @@ function renderDashboard(): string {
     <div class="dashboard-grid">
       <button class="dashboard-card" id="btnStartProvision">
         <strong>Start provisioning</strong>
-        <span>Configure environment, discover a Pi, register in cloud, and install credentials.</span>
+        <span>Configure environment, discover a Pi, register in cloud, and install credentials over SSH.</span>
+      </button>
+      <button class="dashboard-card" id="btnStartUARTProvision">
+        <strong>UART provisioning</strong>
+        <span>Credentials-only install over serial (115200) for any UART-capable device — agent baked in the OS image.</span>
       </button>
       <button class="dashboard-card" id="btnOpenRegistry">
         <strong>Device registry</strong>
@@ -310,6 +338,67 @@ function renderEnv(): string {
   `;
 }
 
+function renderUARTEnv(): string {
+  const portOpts = serialPorts.length
+    ? serialPorts.map(p =>
+      `<option value="${esc(p.path)}" ${state.uartPort === p.path ? 'selected' : ''}>${esc(p.name || p.path)}</option>`
+    ).join('')
+    : `<option value="">No serial ports found — plug in USB-TTL</option>`;
+  const selectedManual = state.uartPort && !serialPorts.some(p => p.path === state.uartPort)
+    ? `<option value="${esc(state.uartPort)}" selected>${esc(state.uartPort)}</option>`
+    : '';
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+    </div>
+    <h2>UART environment</h2>
+    <p class="hint">USB-TTL serial at <strong>115200</strong>. Credentials only — agent binary must already be on the device image.</p>
+    <div class="field">
+      <label>Target backend</label>
+      <select id="backendProfile">
+        <option value="vps" ${state.backendProfile === 'vps' ? 'selected' : ''}>VPS (api.vyooham.com)</option>
+        <option value="mac" ${state.backendProfile === 'mac' ? 'selected' : ''}>Mac LAN dev</option>
+      </select>
+    </div>
+    <div class="field ${state.backendProfile === 'mac' ? '' : 'hidden'}" id="macIPField">
+      <label>Mac IP (for agent.env)</label>
+      <input id="macIP" value="${esc(state.macIP)}" placeholder="192.168.4.66" />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label>Serial port</label>
+        <select id="uartPort">
+          ${selectedManual}
+          ${portOpts}
+        </select>
+      </div>
+      <div class="field" style="max-width:120px;align-self:flex-end">
+        <button type="button" class="secondary" id="btnRefreshSerial" style="width:100%">Refresh</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Or enter port path</label>
+      <input id="uartPortManual" value="" placeholder="/dev/cu.usbserial-310" />
+    </div>
+    <div class="field">
+      <label>UART root password</label>
+      <input id="uartPassword" type="password" autocomplete="off" placeholder="leave blank for lab empty-root" />
+      <p class="field-note">Lab images often have empty root on UART; production requires a password.</p>
+      ${state.uartPassword ? '<p class="field-note success">Password kept for this session</p>' : ''}
+    </div>
+    <div class="field">
+      <label>Claim-grant public key (PEM path, Sense only)</label>
+      <input id="senseClaimGrantPubPath" value="${esc(state.senseClaimGrantPubPath)}" placeholder="/path/to/claim-grant.pub" />
+      <p class="field-note">Required when installing a Sense DTID; ignored for doorbell/NVR.</p>
+    </div>
+    <div class="actions">
+      <button class="primary" id="btnNextUARTEnv">Continue</button>
+    </div>
+    <div id="msg"></div>
+  `;
+}
+
 function renderDiscover(): string {
   const host = selectedHost || state.sshHost;
   return `
@@ -339,12 +428,19 @@ function renderDiscover(): string {
 }
 
 function renderProvision(): string {
-  const typeOptions = deviceTypes.length
-    ? deviceTypes
-        .filter(t => !t.deprecated)
-        .map(t => `<option value="${esc(t.dtid)}" ${state.dtid === t.dtid ? 'selected' : ''}>${esc(t.friendly_name || t.dtid)} (${esc(t.dtid)})</option>`)
+  const usable = deviceTypes.filter(t => !t.deprecated);
+  const optionsSource = usable.length ? usable : deviceTypes;
+  const typeOptions = optionsSource.length
+    ? optionsSource
+        .map(t => {
+          const label = `${t.friendly_name || t.dtid} (${t.dtid})${t.deprecated ? ' — deprecated' : ''}`;
+          return `<option value="${esc(t.dtid)}" ${state.dtid === t.dtid ? 'selected' : ''}>${esc(label)}</option>`;
+        })
         .join('')
-    : '<option value="">No types — add one in Device registry</option>';
+    : '<option value="">No types loaded — click Refresh types</option>';
+  const profilePreview = state.dtid
+    ? resolveInstallProfileLabel(state.dtid)
+    : null;
 
   return `
     <div class="panel-toolbar">
@@ -353,7 +449,12 @@ function renderProvision(): string {
     <h2>Provision in cloud (v2)</h2>
     <div class="field">
       <label>Device type (DTID)</label>
-      <select id="dtid">${typeOptions}</select>
+      <div class="row">
+        <select id="dtid" style="flex:1">${typeOptions}</select>
+        <button type="button" class="secondary" id="btnRefreshTypes" style="max-width:140px">Refresh types</button>
+      </div>
+      <p class="field-note">${deviceTypes.length} type(s) from gateway${usable.length !== deviceTypes.length ? ` · ${usable.length} active` : ''}</p>
+      ${profilePreview ? `<p class="field-note"><strong>Install profile:</strong> <code>${esc(profilePreview.profile)}</code> — ${esc(profilePreview.detail)}</p>` : ''}
     </div>
     <div class="field">
       <label>Factory device_id</label>
@@ -417,11 +518,12 @@ function renderInstall(): string {
   const backendLabel = state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS';
   let checkoutLabel = 'Download latest CI doorbell-agent build and install on device';
   let envLabel = `Deploy /etc/doorbell/agent.env for ${backendLabel}`;
+  let showCheckout = true;
   if (profile === 'nvr') {
     checkoutLabel = 'Build latest control-agent from vyooham-nvr git and install on device';
     envLabel = `Deploy /etc/vyooham/agent.env for ${backendLabel}`;
   } else if (profile === 'sense') {
-    checkoutLabel = 'Build latest control-agent from vyooham-sense git and install on device';
+    showCheckout = false;
     envLabel = `Deploy /etc/vyooham-sense/control-agent.env for ${backendLabel} (mTLS 8883)`;
   }
 
@@ -435,10 +537,10 @@ function renderInstall(): string {
       <label>SSH password override (optional)</label>
       <input id="sshPasswordOverride" type="password" autocomplete="off" />
     </div>
-    <label class="checkbox-field">
+    ${showCheckout ? `<label class="checkbox-field">
       <input type="checkbox" id="checkoutAgent" ${state.checkoutAgent ? 'checked' : ''} />
       ${esc(checkoutLabel)}
-    </label>
+    </label>` : `<p class="hint">Sense control-agent is baked into the OS image — credentials only.</p>`}
     <label class="checkbox-field">
       <input type="checkbox" id="deployAgentEnv" ${state.deployAgentEnv ? 'checked' : ''} />
       ${esc(envLabel)}
@@ -446,6 +548,51 @@ function renderInstall(): string {
     <div class="actions">
       <button class="secondary" id="btnBack">Back</button>
       <button class="primary" id="btnInstall">Install on device</button>
+      <button class="primary" id="btnVerify">Verify MQTT</button>
+    </div>
+    <div id="verifyResult"></div>
+    <div id="msg"></div>
+  `;
+}
+
+function renderUARTInstall(): string {
+  const installProfile = provisionResult
+    ? resolveInstallProfileLabel(provisionResult.dtid)
+    : null;
+  const summary = provisionResult ? `
+    <div class="summary">
+      <strong>global_device_id:</strong> <code>${esc(provisionResult.global_device_id)}</code><br/>
+      <strong>DSID:</strong> <code>${esc(provisionResult.dsid)}</code><br/>
+      <strong>DTID:</strong> <code>${esc(provisionResult.dtid)}</code> · unit <code>${esc(provisionResult.device_id)}</code><br/>
+      <strong>Install profile:</strong> <code>${esc(installProfile?.profile || 'unknown')}</code><br/>
+      <strong>Serial port:</strong> <code>${esc(state.uartPort)}</code> @ 115200
+    </div>
+  ` : '';
+  const backendLabel = state.backendProfile === 'mac' ? 'Mac LAN' : 'VPS';
+  const profile = installProfile?.profile;
+  let envLabel = `Deploy agent env for ${backendLabel}`;
+  if (profile === 'sense') {
+    envLabel = `Deploy /etc/vyooham-sense/control-agent.env for ${backendLabel}`;
+  } else if (profile === 'nvr') {
+    envLabel = `Deploy /etc/vyooham/agent.env for ${backendLabel}`;
+  } else if (profile === 'doorbell') {
+    envLabel = `Deploy /etc/doorbell/agent.env for ${backendLabel}`;
+  }
+
+  return `
+    <div class="panel-toolbar">
+      <button class="link-btn" id="btnBackDashboard">← Dashboard</button>
+    </div>
+    <h2>Install via UART</h2>
+    <p class="hint">Writes identity + certs to the profile etc dir and restarts the agent. Close any <code>screen</code> session on this port first. No agent binary upload.</p>
+    ${summary}
+    <label class="checkbox-field" style="margin-top:16px">
+      <input type="checkbox" id="deployAgentEnv" ${state.deployAgentEnv ? 'checked' : ''} />
+      ${esc(envLabel)}
+    </label>
+    <div class="actions">
+      <button class="secondary" id="btnBack">Back</button>
+      <button class="primary" id="btnInstallUART">Install over UART</button>
       <button class="primary" id="btnVerify">Verify MQTT</button>
     </div>
     <div id="verifyResult"></div>
@@ -996,10 +1143,22 @@ function bindEvents() {
   document.getElementById('btnLogin')?.addEventListener('click', () => void doLogin());
 
   document.getElementById('btnStartProvision')?.addEventListener('click', () => {
+    provisionTransport = 'ssh';
     provisionStep = 1;
     provisionResult = null;
+    resetProvisionFormState();
     view = 'provision';
     render();
+  });
+
+  document.getElementById('btnStartUARTProvision')?.addEventListener('click', () => {
+    provisionTransport = 'uart';
+    provisionStep = 1;
+    provisionResult = null;
+    resetProvisionFormState();
+    view = 'provision';
+    render();
+    void refreshSerialPorts();
   });
 
   document.getElementById('btnOpenRegistry')?.addEventListener('click', () => {
@@ -1172,6 +1331,8 @@ function bindEvents() {
   });
 
   document.getElementById('btnNextEnv')?.addEventListener('click', () => void saveEnvAndContinue());
+  document.getElementById('btnNextUARTEnv')?.addEventListener('click', () => void saveUARTEnvAndContinue());
+  document.getElementById('btnRefreshSerial')?.addEventListener('click', () => void refreshSerialPorts());
 
   document.getElementById('backendProfile')?.addEventListener('change', (e) => {
     state.backendProfile = (e.target as HTMLSelectElement).value;
@@ -1196,8 +1357,17 @@ function bindEvents() {
   });
 
   document.getElementById('btnProvision')?.addEventListener('click', () => void doProvision());
+  document.getElementById('btnRefreshTypes')?.addEventListener('click', () => {
+    setMsg('Loading device types…');
+    void loadDeviceTypes();
+  });
+  document.getElementById('dtid')?.addEventListener('change', () => {
+    state.dtid = val('dtid');
+    render();
+  });
 
   document.getElementById('btnInstall')?.addEventListener('click', () => void doInstall());
+  document.getElementById('btnInstallUART')?.addEventListener('click', () => void doInstallUART());
   document.getElementById('btnVerify')?.addEventListener('click', () => void doVerify());
 }
 
@@ -1244,6 +1414,41 @@ async function saveEnvAndContinue() {
   provisionStep = 2;
   initDiscoverStep();
   render();
+}
+
+async function saveUARTEnvAndContinue() {
+  readUARTEnvFields();
+  if (!state.uartPort) {
+    setMsg('Select or enter a serial port', true);
+    return;
+  }
+  const cfg = buildAppConfig({
+    uart_port: state.uartPort,
+    sense_claim_grant_pub_path: state.senseClaimGrantPubPath,
+  });
+  await SaveConfig(cfg);
+  savedCfg = cfg;
+  provisionStep = 2;
+  render();
+  setMsg('Loading device types…');
+  await loadDeviceTypes();
+}
+
+async function refreshSerialPorts() {
+  try {
+    serialPorts = (await ListSerialPorts()) ?? [];
+    if (!state.uartPort && serialPorts.length) {
+      state.uartPort = serialPorts[0].path;
+    }
+  } catch (e: any) {
+    serialPorts = [];
+    setMsg(e?.message || String(e), true);
+  }
+  if (view === 'provision' && provisionTransport === 'uart' && provisionStep === 1) {
+    render();
+  } else if (view === 'provision' && provisionTransport === 'uart') {
+    render();
+  }
 }
 
 async function loadSubscriptionsData() {
@@ -1591,19 +1796,68 @@ async function runApplyRegistry(dryRun: boolean) {
 
 async function loadDeviceTypes() {
   try {
-    deviceTypes = (await ListDeviceTypes()) ?? [];
+    const raw = await ListDeviceTypes();
+    deviceTypes = normalizeDeviceTypes(raw);
     if (!state.dtid && deviceTypes.length) {
-      const active = deviceTypes.find(t => !t.deprecated);
-      if (active) state.dtid = active.dtid;
+      state.dtid = pickDefaultDTID(deviceTypes);
     }
-    if (view === 'provision' && provisionStep === 3) render();
+    // If a stale DTID is no longer in the list, re-pick.
+    if (state.dtid && !deviceTypes.some(t => t.dtid === state.dtid)) {
+      state.dtid = pickDefaultDTID(deviceTypes);
+    }
+    if (isCloudProvisionStep()) {
+      render();
+      if (!deviceTypes.length) {
+        setMsg('No device types returned from gateway — open Device registry or click Refresh types', true);
+      } else {
+        setMsg(`Loaded ${deviceTypes.length} device type(s)`, false);
+      }
+    }
   } catch (e: any) {
     deviceTypes = [];
-    if (view === 'provision' && provisionStep === 3) {
+    if (isCloudProvisionStep()) {
       render();
-      setMsg(formatRegistryError(e?.message || 'Failed to load device types'), true);
+      setMsg(formatRegistryError(errorMessage(e) || 'Failed to load device types'), true);
     }
   }
+}
+
+function resetProvisionFormState() {
+  // Avoid carrying a doorbell DTID into a Sense UART run (and vice versa).
+  state.dtid = '';
+  state.factoryDeviceID = '';
+  provisionResult = null;
+}
+
+/** Prefer Sense on UART (common factory target); otherwise first active type. */
+function pickDefaultDTID(types: gateway.DeviceType[]): string {
+  const active = types.filter(t => !t.deprecated);
+  const pool = active.length ? active : types;
+  if (provisionTransport === 'uart') {
+    const sense = pool.find(t =>
+      t.dfid === 'df_sense' || (t.capabilities || []).includes('cap_npu00015'));
+    if (sense) return sense.dtid;
+  }
+  return pool[0]?.dtid || '';
+}
+
+/** Wails sometimes returns a bare array, null, or a wrapped `{ types: [...] }`. */
+function normalizeDeviceTypes(raw: unknown): gateway.DeviceType[] {
+  if (raw == null) return [];
+  if (Array.isArray(raw)) return raw as gateway.DeviceType[];
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    if (Array.isArray(obj.types)) return obj.types as gateway.DeviceType[];
+    if (Array.isArray(obj.Types)) return obj.Types as gateway.DeviceType[];
+  }
+  return [];
+}
+
+/** True when the cloud DTID picker is on screen (SSH step 3 / UART step 2). */
+function isCloudProvisionStep(): boolean {
+  if (view !== 'provision') return false;
+  if (provisionTransport === 'uart') return provisionStep === 2;
+  return provisionStep === 3;
 }
 
 function formatRegistryError(message: string): string {
@@ -1645,7 +1899,7 @@ async function doProvision() {
       hw_version: state.hwVersion,
       overwrite: state.overwriteSerial,
     });
-    provisionStep = 4;
+    provisionStep = provisionTransport === 'uart' ? 3 : 4;
     render();
   } catch (e: any) {
     setMsg(e?.message || String(e), true);
@@ -1658,13 +1912,19 @@ async function doInstall() {
     setMsg('SSH password is required', true);
     return;
   }
+  const profileHint = provisionResult
+    ? resolveInstallProfileLabel(provisionResult.dtid).profile
+    : '';
   const gh = githubToken();
+  const checkoutEl = document.getElementById('checkoutAgent') as HTMLInputElement | null;
+  state.deployAgentEnv = (document.getElementById('deployAgentEnv') as HTMLInputElement)?.checked ?? true;
+  state.checkoutAgent = profileHint === 'sense'
+    ? false
+    : (checkoutEl?.checked ?? state.checkoutAgent);
   if (state.checkoutAgent && !gh) {
     setMsg('GitHub token is required (Environment step)', true);
     return;
   }
-  state.deployAgentEnv = (document.getElementById('deployAgentEnv') as HTMLInputElement)?.checked ?? true;
-  state.checkoutAgent = (document.getElementById('checkoutAgent') as HTMLInputElement)?.checked ?? true;
   setMsg('Installing via SSH…');
   try {
     const result = await Install({
@@ -1685,6 +1945,28 @@ async function doInstall() {
       result.agent_active ? 'Agent active' : '',
     ].filter(Boolean).join(' · ');
     setMsg(result.message + (suffix ? ' · ' + suffix : ''), !depsOk || !result.setup_server_ok || !result.agent_active);
+  } catch (e: any) {
+    setMsg(e?.message || String(e), true);
+  }
+}
+
+async function doInstallUART() {
+  if (!state.uartPort) {
+    setMsg('Serial port missing — go back to Environment', true);
+    return;
+  }
+  state.deployAgentEnv = (document.getElementById('deployAgentEnv') as HTMLInputElement)?.checked ?? true;
+  setMsg('Installing via UART… close any screen session on this port');
+  try {
+    const result = await InstallUART({
+      port: state.uartPort,
+      password: state.uartPassword,
+      deploy_agent_env: state.deployAgentEnv,
+    });
+    setMsg(
+      result.message + (result.agent_active ? ' · Agent active' : ''),
+      !result.agent_active,
+    );
   } catch (e: any) {
     setMsg(e?.message || String(e), true);
   }
@@ -1777,6 +2059,8 @@ function buildAppConfig(overrides: Partial<config.AppConfig> = {}): config.AppCo
     phone: state.phone,
     github_token: state.githubToken,
     ssh_password: state.sshPassword,
+    uart_port: state.uartPort,
+    sense_claim_grant_pub_path: state.senseClaimGrantPubPath,
     agent_repo_url: savedCfg?.agent_repo_url || 'git@github.com:vyooham/pi-streamer.git',
     agent_repo_branch: savedCfg?.agent_repo_branch || 'main',
     agent_repo_path: savedCfg?.agent_repo_path || '',
@@ -1797,6 +2081,18 @@ function readEnvFields() {
   if (envPw) state.sshPassword = envPw;
   const gh = val('githubToken');
   if (isNewGitHubToken(gh)) state.githubToken = gh;
+}
+
+function readUARTEnvFields() {
+  state.backendProfile = (document.getElementById('backendProfile') as HTMLSelectElement)?.value || 'vps';
+  state.macIP = val('macIP');
+  const manual = val('uartPortManual');
+  const selected = (document.getElementById('uartPort') as HTMLSelectElement)?.value?.trim() || '';
+  state.uartPort = manual || selected || state.uartPort;
+  // Allow blank — lab empty-root; always take the field value on continue.
+  const pwField = document.getElementById('uartPassword') as HTMLInputElement | null;
+  if (pwField) state.uartPassword = pwField.value;
+  state.senseClaimGrantPubPath = val('senseClaimGrantPubPath') || state.senseClaimGrantPubPath;
 }
 
 function isNewGitHubToken(value: string): boolean {

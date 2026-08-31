@@ -26,6 +26,8 @@ export function GetSession():Promise<main.SessionInfo>;
 
 export function Install(arg1:main.InstallRequest):Promise<device.InstallResult>;
 
+export function InstallUART(arg1:main.InstallUARTRequest):Promise<device.InstallResult>;
+
 export function ListCapabilities():Promise<Array<gateway.Capability>>;
 
 export function ListDeviceFamilies():Promise<Array<gateway.DeviceFamily>>;
@@ -35,6 +37,8 @@ export function ListDeviceTypes():Promise<Array<gateway.DeviceType>>;
 export function ListEntitlements():Promise<Array<gateway.Entitlement>>;
 
 export function ListPlans():Promise<Array<gateway.Plan>>;
+
+export function ListSerialPorts():Promise<Array<device.SerialPortInfo>>;
 
 export function Login(arg1:string,arg2:string):Promise<main.LoginResult>;
 

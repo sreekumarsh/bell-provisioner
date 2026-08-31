@@ -63,7 +63,7 @@ func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, id
 	expectedDeviceID := id.DeviceID
 
 	if spec.CameraDeps {
-		if err := installDoorbellRuntimeDeps(client, cfg.Password); err != nil {
+		if err := installDoorbellRuntimeDeps(client, cfg.User, cfg.Password); err != nil {
 			return nil, err
 		}
 	}
@@ -77,14 +77,14 @@ func InstallCredentials(cfg SSHConfig, profile InstallProfile, privateKeyPEM, id
 		if opts.ServiceName == "" {
 			opts.ServiceName = spec.ServiceName
 		}
-		if err := DeployAgentBundle(client, cfg.Password, opts); err != nil {
+		if err := DeployAgentBundle(client, cfg.User, cfg.Password, opts); err != nil {
 			return nil, fmt.Errorf("deploy agent: %w", err)
 		}
 		agentDeployed = true
 	}
 
 	etcDir := spec.EtcDir
-	if err := runSudo(client, cfg.Password, "sudo mkdir -p "+shellSingleQuote(etcDir)); err != nil {
+	if err := runSudo(client, cfg.User, cfg.Password, "sudo mkdir -p "+shellSingleQuote(etcDir)); err != nil {
 		return nil, fmt.Errorf("mkdir: %w", err)
 	}
 
@@ -135,7 +135,7 @@ rm -f %s
 `, claimGrantMode, shellSingleQuote(tmpGrant), shellSingleQuote(etcDir), ClaimGrantFileName, shellSingleQuote(tmpGrant))
 	}
 
-	if err := runSudo(client, cfg.Password, installScript); err != nil {
+	if err := runSudo(client, cfg.User, cfg.Password, installScript); err != nil {
 		return nil, fmt.Errorf("install files: %w", err)
 	}
 
@@ -144,7 +144,7 @@ rm -f %s
 		if err := uploadFile(client, "/tmp/agent.env", []byte(agentEnvContent), 0644); err != nil {
 			return nil, fmt.Errorf("upload agent.env: %w", err)
 		}
-		if err := runSudo(client, cfg.Password, fmt.Sprintf(
+		if err := runSudo(client, cfg.User, cfg.Password, fmt.Sprintf(
 			"sudo install -m 644 -o root -g root /tmp/agent.env %s && rm -f /tmp/agent.env",
 			shellSingleQuote(envRemote),
 		)); err != nil {
@@ -157,7 +157,7 @@ rm -f %s
 		"sudo systemctl daemon-reload && (sudo systemctl restart %s || sudo systemctl restart %s.service)",
 		svc, svc,
 	)
-	if err := runSudo(client, cfg.Password, restartCmd); err != nil {
+	if err := runSudo(client, cfg.User, cfg.Password, restartCmd); err != nil {
 		return nil, fmt.Errorf("restart agent: %w", err)
 	}
 

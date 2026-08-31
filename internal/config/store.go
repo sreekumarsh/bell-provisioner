@@ -38,6 +38,10 @@ type AppConfig struct {
 	// no verify key.
 	SenseClaimGrantPubPath string `json:"sense_claim_grant_pub_path,omitempty"`
 
+	// UARTPort is the last-used serial device path for Sense UART provisioning
+	// (e.g. /dev/cu.usbserial-310). Password is session-only and not stored here.
+	UARTPort string `json:"uart_port,omitempty"`
+
 	AccessToken        string `json:"access_token,omitempty"`
 	RefreshToken       string `json:"refresh_token,omitempty"`
 	TokenExpiresAt     int64  `json:"token_expires_at,omitempty"`

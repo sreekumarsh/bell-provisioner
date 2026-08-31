@@ -42,6 +42,10 @@ export function Install(arg1) {
   return window['go']['main']['App']['Install'](arg1);
 }
 
+export function InstallUART(arg1) {
+  return window['go']['main']['App']['InstallUART'](arg1);
+}
+
 export function ListCapabilities() {
   return window['go']['main']['App']['ListCapabilities']();
 }
@@ -60,6 +64,10 @@ export function ListEntitlements() {
 
 export function ListPlans() {
   return window['go']['main']['App']['ListPlans']();
+}
+
+export function ListSerialPorts() {
+  return window['go']['main']['App']['ListSerialPorts']();
 }
 
 export function Login(arg1, arg2) {

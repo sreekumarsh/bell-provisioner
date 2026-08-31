@@ -18,7 +18,8 @@ type AgentInstallOptions struct {
 }
 
 // DeployAgentBundle installs an agent binary + systemd unit from a bundle.
-func DeployAgentBundle(client *ssh.Client, sudoPassword string, opts AgentInstallOptions) error {
+// sshUser selects whether commands use sudo (non-root) or run directly (root).
+func DeployAgentBundle(client *ssh.Client, sshUser, sudoPassword string, opts AgentInstallOptions) error {
 	bundle := opts.Bundle
 	if bundle == nil || len(bundle.Binary) == 0 {
 		return fmt.Errorf("agent bundle is empty")
@@ -58,7 +59,7 @@ echo "==> Installed %s"
 		shellSingleQuote(tmpBin), shellSingleQuote(tmpUnit),
 		serviceName, binaryName,
 	)
-	if err := runSudo(client, sudoPassword, installScript); err != nil {
+	if err := runSudo(client, sshUser, sudoPassword, installScript); err != nil {
 		return fmt.Errorf("install agent on device: %w", err)
 	}
 	return nil

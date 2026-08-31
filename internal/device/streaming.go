@@ -74,17 +74,17 @@ func AgentRuntimeDepsInstallScript() string {
 	return DoorbellRuntimeDepsInstallScript()
 }
 
-func installDoorbellRuntimeDeps(client *ssh.Client, sudoPassword string) error {
-	if err := runSudo(client, sudoPassword, DoorbellRuntimeDepsInstallScript()); err != nil {
+func installDoorbellRuntimeDeps(client *ssh.Client, sshUser, sudoPassword string) error {
+	if err := runSudo(client, sshUser, sudoPassword, DoorbellRuntimeDepsInstallScript()); err != nil {
 		return fmt.Errorf("apt/ffmpeg/go2rtc/motion venv install failed (check Pi network and sudo password): %w", err)
 	}
-	if err := installMotionAssets(client, sudoPassword); err != nil {
+	if err := installMotionAssets(client, sshUser, sudoPassword); err != nil {
 		return err
 	}
 	return nil
 }
 
-func installMotionAssets(client *ssh.Client, sudoPassword string) error {
+func installMotionAssets(client *ssh.Client, sshUser, sudoPassword string) error {
 	model, err := runtimeAssets.ReadFile("assets/yolov8n.onnx")
 	if err != nil {
 		return fmt.Errorf("read embedded motion model: %w", err)
@@ -114,7 +114,7 @@ rm -f %s %s
 		shellSingleQuote(motionScriptRemotePath), shellSingleQuote(motionClassifyTmpPath), shellSingleQuote(motionScriptRemotePath),
 		shellSingleQuote(motionModelTmpPath), shellSingleQuote(motionClassifyTmpPath))
 
-	if err := runSudo(client, sudoPassword, installScript); err != nil {
+	if err := runSudo(client, sshUser, sudoPassword, installScript); err != nil {
 		return fmt.Errorf("install motion assets on Pi: %w", err)
 	}
 	return nil

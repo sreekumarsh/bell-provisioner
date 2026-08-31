@@ -20,6 +20,7 @@ export namespace config {
 	    sense_agent_repo_branch: string;
 	    sense_mqtt_transport?: string;
 	    sense_claim_grant_pub_path?: string;
+	    uart_port?: string;
 	    access_token?: string;
 	    refresh_token?: string;
 	    token_expires_at?: number;
@@ -49,6 +50,7 @@ export namespace config {
 	        this.sense_agent_repo_branch = source["sense_agent_repo_branch"];
 	        this.sense_mqtt_transport = source["sense_mqtt_transport"];
 	        this.sense_claim_grant_pub_path = source["sense_claim_grant_pub_path"];
+	        this.uart_port = source["uart_port"];
 	        this.access_token = source["access_token"];
 	        this.refresh_token = source["refresh_token"];
 	        this.token_expires_at = source["token_expires_at"];
@@ -83,6 +85,20 @@ export namespace device {
 	        this.motion_ok = source["motion_ok"];
 	        this.setup_server_ok = source["setup_server_ok"];
 	        this.message = source["message"];
+	    }
+	}
+	export class SerialPortInfo {
+	    path: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SerialPortInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
 	    }
 	}
 
@@ -433,6 +449,22 @@ export namespace main {
 	        this.deploy_agent_env = source["deploy_agent_env"];
 	        this.checkout_agent = source["checkout_agent"];
 	        this.github_token = source["github_token"];
+	    }
+	}
+	export class InstallUARTRequest {
+	    port: string;
+	    password: string;
+	    deploy_agent_env: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstallUARTRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = source["port"];
+	        this.password = source["password"];
+	        this.deploy_agent_env = source["deploy_agent_env"];
 	    }
 	}
 	export class LoginResult {

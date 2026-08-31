@@ -768,7 +768,9 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 	}
 
 	var bundle *agentrelease.Bundle
-	if checkoutAgentEnabled(req.CheckoutAgent) {
+	// Sense agents ship in the Yocto bake — never download/build over the wire.
+	wantAgent := checkoutAgentEnabled(req.CheckoutAgent) && profile != device.ProfileSense
+	if wantAgent {
 		if ghToken == "" {
 			return nil, fmt.Errorf("GitHub token is required — set it in Environment or config.json (github_token)")
 		}
@@ -790,21 +792,6 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 				Binary:      nvrBundle.Binary,
 				ServiceUnit: nvrBundle.ServiceUnit,
 			}
-		case device.ProfileSense:
-			owner, repo, err := appcfg.GitHubRepo(cfg.SenseAgentRepoURL)
-			if err != nil {
-				return nil, err
-			}
-			// Same repo layout as the NVR's control-agent, but RK3566/arm64.
-			senseBundle, err := nvrrelease.BuildSenseDefaultTimeout(owner, repo, ghToken, cfg.SenseAgentRepoBranch)
-			if err != nil {
-				return nil, fmt.Errorf("build Sense control-agent from git: %w", err)
-			}
-			bundle = &agentrelease.Bundle{
-				Version:     senseBundle.Version,
-				Binary:      senseBundle.Binary,
-				ServiceUnit: senseBundle.ServiceUnit,
-			}
 		default:
 			owner, repo, err := appcfg.GitHubRepo(cfg.AgentRepoURL)
 			if err != nil {
@@ -823,11 +810,113 @@ func (a *App) Install(req InstallRequest) (*device.InstallResult, error) {
 		User:     sshUser,
 		Password: sshPass,
 	}, profile, priv, identity, deviceCrt, caCrt, claimGrantPubPEM, agentEnv, req.DeployAgentEnv, device.AgentInstallOptions{
-		Enabled:     checkoutAgentEnabled(req.CheckoutAgent),
+		Enabled:     wantAgent,
 		Bundle:      bundle,
 		BinaryName:  spec.BinaryName,
 		ServiceName: spec.ServiceName,
 	})
+}
+
+// InstallUARTRequest configures credentials install over serial getty.
+type InstallUARTRequest struct {
+	Port           string `json:"port"`
+	Password       string `json:"password"`
+	DeployAgentEnv bool   `json:"deploy_agent_env"`
+}
+
+// ListSerialPorts returns host serial devices for UART provisioning.
+func (a *App) ListSerialPorts() ([]device.SerialPortInfo, error) {
+	return device.ListSerialPorts()
+}
+
+// InstallUART pushes credentials over UART (no agent binary). Works for any
+// install profile — agent is assumed already on the device image.
+func (a *App) InstallUART(req InstallUARTRequest) (*device.InstallResult, error) {
+	a.mu.Lock()
+	priv := append([]byte(nil), a.pendingPrivateKey...)
+	identity := append([]byte(nil), a.pendingIdentity...)
+	deviceCrt := append([]byte(nil), a.pendingDeviceCrt...)
+	caCrt := append([]byte(nil), a.pendingCaCrt...)
+	cfg := a.cfg
+	a.mu.Unlock()
+
+	if len(priv) == 0 || len(identity) == 0 {
+		return nil, fmt.Errorf("provision the device first")
+	}
+
+	id, err := device.ParseIdentity(identity)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.ensureFreshToken(); err != nil {
+		return nil, err
+	}
+	client, err := a.adminClient()
+	if err != nil {
+		return nil, err
+	}
+	types, err := client.ListDeviceTypes()
+	if err != nil {
+		return nil, fmt.Errorf("list device types: %w", err)
+	}
+	dt, err := device.FindDeviceType(types, id.DTID)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := device.ResolveProfile(dt)
+	if err != nil {
+		return nil, err
+	}
+
+	claimGrantPubPEM, err := device.ResolveClaimGrantPub(cfg.SenseClaimGrantPubPath)
+	if err != nil {
+		return nil, err
+	}
+
+	port := strings.TrimSpace(req.Port)
+	if port == "" {
+		port = strings.TrimSpace(cfg.UARTPort)
+	}
+	password := strings.TrimSpace(req.Password)
+
+	agentEnv := ""
+	if req.DeployAgentEnv {
+		backend := appcfg.BackendProfile(cfg.BackendProfile)
+		switch profile {
+		case device.ProfileNVR:
+			agentEnv = appcfg.ControlAgentEnv(backend, cfg.MacIP)
+		case device.ProfileSense:
+			agentEnv = appcfg.SenseControlAgentEnv(backend, cfg.MacIP,
+				appcfg.MQTTTransport(cfg.SenseMQTTTransport))
+		default:
+			agentEnv = appcfg.AgentEnv(backend, cfg.MacIP)
+		}
+	}
+
+	bundle, err := device.BuildCredentialBundle(
+		profile, priv, identity, deviceCrt, caCrt, claimGrantPubPEM, agentEnv, req.DeployAgentEnv,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := device.InstallCredentialsUART(device.UARTConfig{
+		Port:     port,
+		Password: password,
+	}, bundle)
+	if err != nil {
+		return nil, err
+	}
+
+	// Remember last-used port (not password).
+	if port != "" && port != cfg.UARTPort {
+		a.mu.Lock()
+		a.cfg.UARTPort = port
+		saveCfg := a.cfg
+		a.mu.Unlock()
+		_ = appcfg.Save(saveCfg)
+	}
+	return result, nil
 }
 
 // VerifyRequest configures post-install checks.
